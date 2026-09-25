@@ -27,6 +27,40 @@ class ServiceError(ValueError):
     pass
 
 
+def _number(value, name: str, *, minimum: float, maximum: float) -> float:
+    """Coerce a user-supplied number, reporting a bad value as a 400 not a 500."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ServiceError(f"{name} must be a number") from exc
+    if not minimum <= number <= maximum:
+        raise ServiceError(f"{name} must be between {minimum:g} and {maximum:g}")
+    return number
+
+
+def _stored_spec(spec: dict) -> dict:
+    """The spec as persisted: never the uploaded media.
+
+    Base64 blobs are the largest part of a spec and are only needed once, when
+    the job is submitted. Storing them made every /api/jobs poll (5 s) return
+    megabytes of image data. Keep the parameter block and a note that media was
+    attached; /reuse reads the parameters from here.
+    """
+    stored = {k: v for k, v in spec.items() if not k.endswith("_b64")}
+    if isinstance(stored.get("watermark"), dict):
+        stored["watermark"] = {k: v for k, v in spec["watermark"].items()
+                               if k != "image_b64"}
+        stored["watermark"]["image"] = "<uploaded>"
+    attached = {k.removesuffix("_b64"): len(v) for k, v in spec.items()
+                if k.endswith("_b64") and isinstance(v, list)}
+    for key in ("first_frame_b64", "last_frame_b64"):
+        if spec.get(key):
+            attached[key.removesuffix("_b64")] = 1
+    if attached:
+        stored["media_attached"] = attached
+    return stored
+
+
 class Service:
     def __init__(self, db: database.Database):
         self.db = db
@@ -58,11 +92,14 @@ class Service:
             str(v).strip() for v in prompt.values() if str(v).strip())[:400]
 
         files = payload.get("files") or {}
+        if not isinstance(files, dict):
+            raise ServiceError("files must be an object")
         spec: dict = {
             "task": task,
             "quality": quality,
             "prompt": {k: str(v) for k, v in prompt.items()},
-            "duration_seconds": float(payload.get("duration_seconds", 5)),
+            "duration_seconds": _number(payload.get("duration_seconds", 5),
+                                        "duration_seconds", minimum=1, maximum=15),
         }
         for key in ("width", "height", "seed", "steps", "shift_video", "shift_audio",
                     "sampler_name", "scheduler", "ref_image_size", "upscale_model",
@@ -79,18 +116,34 @@ class Service:
                     raise ServiceError(f"{key} must be an object")
                 spec[key] = value
         if payload.get("loras"):
-            spec["loras"] = [
-                {"name": str(l.get("name", "")).strip(), "strength": float(l.get("strength", 1.0))}
-                for l in payload["loras"] if str(l.get("name", "")).strip()
-            ][:10]
-        if files.get("first_frame"):
-            spec["first_frame_b64"] = files["first_frame"]
-        if files.get("last_frame"):
-            spec["last_frame_b64"] = files["last_frame"]
-        if files.get("ref_images"):
-            spec["ref_images_b64"] = files["ref_images"][:9]
-        if files.get("ref_audios"):
-            spec["ref_audios_b64"] = files["ref_audios"][:3]
+            if not isinstance(payload["loras"], list):
+                raise ServiceError("loras must be a list")
+            loras = []
+            for entry in payload["loras"]:
+                if not isinstance(entry, dict):
+                    raise ServiceError("each lora must be an object")
+                name = str(entry.get("name", "")).strip()
+                if not name:
+                    continue
+                loras.append({
+                    "name": name,
+                    "strength": _number(entry.get("strength", 1.0), "lora strength",
+                                        minimum=-4, maximum=4),
+                })
+            if loras:
+                spec["loras"] = loras[:10]
+        for field, limit in (("first_frame", 1), ("last_frame", 1),
+                             ("ref_images", 9), ("ref_audios", 3)):
+            value = files.get(field)
+            if not value:
+                continue
+            if not isinstance(value, list):
+                raise ServiceError(f"files.{field} must be a list")
+            cleaned = [v for v in value if isinstance(v, str) and v.strip()]
+            if len(cleaned) > limit:
+                raise ServiceError(f"files.{field} accepts at most {limit}")
+            if cleaned:
+                spec[f"{field}_b64"] = cleaned if limit > 1 else cleaned[0]
 
         if task in ("i2va", "flf2va") and not spec.get("first_frame_b64"):
             raise ServiceError(f"{task} needs a first frame image")
@@ -100,28 +153,36 @@ class Service:
             raise ServiceError("ref2va needs at least one reference image")
 
         job_id = f"nv-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
-        result = runpod_client.run(spec)
-        stored_spec = dict(spec)
-        if isinstance(stored_spec.get("watermark"), dict):
-            # The uploaded watermark bytes are large and never reused; keep the
-            # parameter block only.
-            stored_spec["watermark"] = {k: v for k, v in spec["watermark"].items()
-                                        if k != "image_b64"}
-            stored_spec["watermark"]["image"] = "<uploaded>"
-        self.db.insert_job(job_id, result["id"], task, quality, stored_spec, prompt_text)
+        # Record the job BEFORE submitting: if the insert fails (locked DB, disk
+        # full) we must not have a live GPU render that nothing tracks. The
+        # poller skips QUEUED rows with no runpod id, so a failure here is inert.
+        self.db.insert_job(job_id, None, task, quality, _stored_spec(spec), prompt_text)
+        try:
+            result = runpod_client.run(spec)
+        except Exception as exc:
+            self.db.update_job(job_id, status="FAILED", error=str(exc))
+            raise
+        self.db.update_job(job_id, runpod_job_id=result["id"])
         return {"job_id": job_id, "runpod_job_id": result["id"]}
 
     def healthcheck(self) -> dict:
-        result = runpod_client.run({"task": "healthcheck"})
         job_id = f"nv-hc-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
-        self.db.insert_job(job_id, result["id"], "healthcheck", "", {"task": "healthcheck"}, "")
+        self.db.insert_job(job_id, None, "healthcheck", "", {"task": "healthcheck"}, "")
+        try:
+            result = runpod_client.run({"task": "healthcheck"})
+        except Exception as exc:
+            self.db.update_job(job_id, status="FAILED", error=str(exc))
+            raise
+        self.db.update_job(job_id, runpod_job_id=result["id"])
         return {"job_id": job_id, "runpod_job_id": result["id"]}
 
     def cancel(self, job_id: str) -> dict:
         job = self.db.get_job(job_id)
         if not job:
             raise ServiceError(f"unknown job {job_id}")
-        if job.get("runpod_job_id") and job["status"] in ("QUEUED", "RUNNING"):
+        if job["status"] not in ("QUEUED", "RUNNING"):
+            raise ServiceError(f"job {job_id} is already {job['status']}")
+        if job.get("runpod_job_id"):
             try:
                 runpod_client.cancel(job["runpod_job_id"])
             except runpod_client.RunpodClientError as exc:
@@ -130,6 +191,11 @@ class Service:
         return {"job_id": job_id, "status": "CANCELLED"}
 
     # -- polling ---------------------------------------------------------------
+
+    # Statuses Runpod reports that are not one of the four we handle. A job in
+    # one of these is finished as far as the queue is concerned.
+    TERMINAL_UNKNOWN = {"TIMED_OUT", "RETRYING"}
+    MAX_POLL_ERRORS = 5
 
     def _poll_loop(self) -> None:
         while not self._poller_stop.wait(4.0):
@@ -145,8 +211,17 @@ class Service:
         try:
             state = runpod_client.status(job["runpod_job_id"])
         except runpod_client.RunpodClientError as exc:
-            self.db.update_job(job["id"], status="FAILED", error=str(exc))
+            # A transient network fault must not fail a render that is still
+            # running: count consecutive failures and only give up after a few.
+            errors = int(job.get("poll_errors") or 0) + 1
+            if errors >= self.MAX_POLL_ERRORS:
+                self.db.update_job(job["id"], status="FAILED",
+                                   error=f"{exc} (after {errors} poll failures)")
+            else:
+                self.db.update_job(job["id"], poll_errors=errors)
             return
+        if job.get("poll_errors"):
+            self.db.update_job(job["id"], poll_errors=0)
         status = state.get("status")
         if status in ("IN_QUEUE", "IN_PROGRESS", None):
             if status and status != job["status"]:
@@ -159,6 +234,12 @@ class Service:
                                error=str(state.get("error") or "worker failed"))
         elif status == "CANCELLED":
             self.db.update_job(job["id"], status="CANCELLED", error="cancelled on Runpod")
+        else:
+            # Runpod reports statuses beyond the four handled above (TIMED_OUT,
+            # RETRYING). Without this branch such a job falls through every case
+            # and stays in the active list forever, polled every 4 seconds.
+            self.db.update_job(job["id"], status="FAILED",
+                               error=f"Runpod reported status {status!r}")
 
     def _complete(self, job: dict, output: dict) -> None:
         if output.get("status") == "error":

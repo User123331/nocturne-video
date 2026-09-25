@@ -98,8 +98,10 @@ class NocturneServer:
         if path == "/" and method == "GET":
             return "FILE", WEB_DIR / "index.html", "file"
         if method == "GET":
+            # Resolve, then require the result to be inside WEB_DIR: a string
+            # prefix test would also accept a sibling like web-backup/secret.
             asset = (WEB_DIR / path.lstrip("/")).resolve()
-            if asset.is_file() and str(asset).startswith(str(WEB_DIR)):
+            if asset.is_file() and asset.is_relative_to(WEB_DIR.resolve()):
                 return "FILE", asset, "file"
         return 404, {"error": f"no route for {method} {path}"}, "json"
 
@@ -111,12 +113,16 @@ def make_handler(server_state: NocturneServer):
         def log_message(self, fmt, *args):  # noqa: N802 — quiet
             pass
 
-        def _send_json(self, code: int, obj: dict) -> None:
+        def _send_json(self, code: int, obj: dict, *, close: bool = False) -> None:
             body = json.dumps(obj).encode("utf-8")
             self.send_response(code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
+            if close:
+                # State it explicitly: the socket closes either way, but a
+                # client that sees the header will not attempt to reuse it.
+                self.send_header("Connection", "close")
             self.end_headers()
             self.wfile.write(body)
 
@@ -127,11 +133,19 @@ def make_handler(server_state: NocturneServer):
             if range_header and (m := re.match(r"bytes=(\d*)-(\d*)$", range_header.strip())):
                 if m.group(1):
                     start = int(m.group(1))
-                if m.group(2):
-                    end = int(m.group(2))
+                    if m.group(2):
+                        end = int(m.group(2))
+                elif m.group(2):
+                    # Suffix range: the LAST n bytes, not the first n.
+                    length = int(m.group(2))
+                    start = max(0, size - length)
+                    end = size - 1
             if start > end or start >= size:
                 self.send_response(416)
                 self.send_header("Content-Range", f"bytes */{size}")
+                # Without Content-Length the client waits for a body that never
+                # comes, which wedges a <video> element that sent a stale range.
+                self.send_header("Content-Length", "0")
                 self.end_headers()
                 return
             end = min(end, size - 1)
@@ -159,7 +173,10 @@ def make_handler(server_state: NocturneServer):
             if method == "POST":
                 length = int(self.headers.get("Content-Length") or 0)
                 if length > config.MAX_BODY_BYTES:
-                    self._send_json(413, {"error": "payload too large"})
+                    # Drain before replying: the connection is keep-alive, so
+                    # unread bytes would be parsed as the next request line.
+                    self.close_connection = True
+                    self._send_json(413, {"error": "payload too large"}, close=True)
                     return
                 body = self.rfile.read(length) if length else b""
             try:

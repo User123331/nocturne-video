@@ -122,26 +122,39 @@ def download(asset: dict, dest: Path, token: str | None) -> None:
 
     digest = hashlib.sha256()
     total = 0
-    with opener.open(request, timeout=120) as response, dest.open("wb") as out:
-        final_url = response.geturl()
-        if asset["model_id"] == "civitai" and response.status in (301, 302, 307, 308):
-            with opener.open(final_url, timeout=120) as redirect_response, dest.open("ab") as out2:
-                for block in iter(lambda: redirect_response.read(CHUNK), b""):
-                    digest.update(block)
-                    total += len(block)
-                    out2.write(block)
-        else:
-            response2 = response
-            for block in iter(lambda: response2.read(CHUNK), b""):
-                digest.update(block)
-                total += len(block)
-                out.write(block)
+    response = _open_following_redirects(opener, request, asset["model_id"])
+    with response, dest.open("wb") as out:
+        for block in iter(lambda: response.read(CHUNK), b""):
+            digest.update(block)
+            total += len(block)
+            out.write(block)
     if total != asset["bytes"]:
         raise SystemExit(f"{asset['slug']}: downloaded {total} bytes, manifest says {asset['bytes']}")
     expected = asset.get("sha256")
     if expected and digest.hexdigest().upper() != expected.upper():
         raise SystemExit(f"{asset['slug']}: sha256 mismatch: {digest.hexdigest()}")
     print(f"downloaded {asset['slug']}: {total:,} bytes, sha256 {digest.hexdigest()[:16]}…")
+
+
+def _open_following_redirects(opener, request, model_id: str):
+    """Open the request, following one cross-host redirect by hand.
+
+    CivitAI answers with a 307 to a signed CDN URL. A redirect handler that
+    returns None makes urllib RAISE HTTPError instead of returning a response,
+    so the redirect has to be caught and re-issued here (the worker's
+    asset_manager does the same thing for the same reason).
+    """
+    try:
+        return opener.open(request, timeout=120)
+    except urllib.error.HTTPError as error:
+        if error.code not in (301, 302, 303, 307, 308):
+            raise
+        location = error.headers.get("Location")
+        if not location:
+            raise SystemExit(f"{model_id} download redirected without a Location header")
+        return urllib.request.urlopen(
+            urllib.request.Request(location, headers={"User-Agent": config.USER_AGENT}),
+            timeout=120)
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):

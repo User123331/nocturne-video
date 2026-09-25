@@ -333,6 +333,36 @@ class GraphTests(unittest.TestCase):
         with self.assertRaises(wf.SpecError):
             self.build({"quality": "nonsense"})
 
+    def test_frame_cap_spans_duration_and_fps(self):
+        """Duration and fps can each be in range while the product is not."""
+        self.assertEqual(wf.frames_for_duration(15, 24), 362)   # exactly the cap
+        for duration, fps in ((15, 48), (15, 32), (10, 48), (8, 48)):
+            with self.assertRaises(wf.SpecError, msg=f"{duration}s @ {fps}fps"):
+                wf.frames_for_duration(duration, fps)
+
+    def test_ref2va_reference_audio_is_wired(self):
+        graph, _ = wf.build_graph(
+            spec(task="ref2va", ref_images=["a.png"],
+                 ref_audios=["one.mp3", "two.wav"]),
+            paths=PATHS, gen_id="g1", upload_dir="nocturne/g1")
+        cond = graph["5"]["inputs"]
+        self.assertEqual(sorted(cond["ref_audios"]), ["ref_audio_1", "ref_audio_2"])
+        self.assertEqual(cond["ref_audios"]["ref_audio_1"], ["231", 0])
+        self.assertEqual(cond["ref_audios"]["ref_audio_2"], ["232", 0])
+        self.assertEqual(graph["231"]["class_type"], "LoadAudio")
+        self.assertEqual(graph["231"]["inputs"]["audio"], "nocturne/g1/one.mp3")
+        self.assertEqual(graph["232"]["inputs"]["audio"], "nocturne/g1/two.wav")
+        # No audio refs means no audio nodes at all.
+        graph2, _ = wf.build_graph(spec(task="ref2va", ref_images=["a.png"]),
+                                   paths=PATHS, gen_id="g1", upload_dir="nocturne/g1")
+        self.assertNotIn("ref_audios", graph2["5"]["inputs"])
+
+    def test_ref2va_audio_limit(self):
+        with self.assertRaises(wf.SpecError):
+            wf.build_graph(spec(task="ref2va", ref_images=["a.png"],
+                                ref_audios=["1.mp3", "2.mp3", "3.mp3", "4.mp3"]),
+                           paths=PATHS, gen_id="g1", upload_dir="u")
+
     def test_unknown_checkpoint(self):
         with self.assertRaises(wf.SpecError):
             self.build({"checkpoint": "nope"})

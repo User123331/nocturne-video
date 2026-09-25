@@ -67,6 +67,38 @@ class DatabaseTests(unittest.TestCase):
         self.db.insert_generation(gen_id="g2", task="t2va", prompt_text="p2")
         self.assertEqual(self.db.search_generations(sort="favorited")[0]["gen_id"], "g1")
 
+    def test_list_jobs_omits_spec_json(self):
+        """The queue is polled every few seconds and specs can carry megabytes
+        of uploaded media, so the list must not return spec_json."""
+        self.db.insert_job("j1", "rp1", "t2va", "quality",
+                           {"task": "t2va", "first_frame_b64": "A" * 1000}, "p")
+        row = self.db.list_jobs()[0]
+        self.assertNotIn("spec_json", row)
+        # The queue still needs these.
+        for column in ("id", "status", "task", "prompt_text", "error", "gen_id"):
+            self.assertIn(column, row)
+
+    def test_stored_spec_strips_media(self):
+        from local_app import service
+        spec = {
+            "task": "ref2va",
+            "first_frame_b64": "x" * 100,
+            "ref_images_b64": ["a", "b"],
+            "ref_audios_b64": ["c"],
+            "watermark": {"image_b64": "y" * 100, "position": "top-left"},
+            "prompt": {"summary": "s"},
+        }
+        stored = service._stored_spec(spec)
+        self.assertNotIn("first_frame_b64", stored)
+        self.assertNotIn("ref_images_b64", stored)
+        self.assertNotIn("ref_audios_b64", stored)
+        self.assertNotIn("image_b64", stored["watermark"])
+        # The parameters survive, and the media is summarised.
+        self.assertEqual(stored["watermark"]["position"], "top-left")
+        self.assertEqual(stored["prompt"], {"summary": "s"})
+        self.assertEqual(stored["media_attached"],
+                         {"ref_images": 2, "ref_audios": 1, "first_frame": 1})
+
     def test_generation_search(self):
         self.db.insert_generation(gen_id="g1", job_id="j1", task="t2va", quality="quality",
                                   checkpoint="dasiwa", prompt_text="a lighthouse in fog",

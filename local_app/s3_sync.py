@@ -146,6 +146,12 @@ class RunpodS3:
                     total += len(block)
                     if progress:
                         progress(total)
+        except Exception:
+            # Never leave a truncated .part behind: it would be mistaken for a
+            # resumable download on the next attempt.
+            response.close()
+            part.unlink(missing_ok=True)
+            raise
         finally:
             response.close()
         if total == 0:

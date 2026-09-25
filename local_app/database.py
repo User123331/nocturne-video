@@ -52,7 +52,13 @@ CREATE INDEX IF NOT EXISTS idx_gen_task ON generations(task);
 MIGRATIONS = [
     "ALTER TABLE generations ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'",
     "ALTER TABLE generations ADD COLUMN favorited INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE jobs ADD COLUMN poll_errors INTEGER NOT NULL DEFAULT 0",
 ]
+
+# The queue list deliberately omits spec_json: it can carry megabytes of
+# uploaded media, and the dashboard polls this endpoint every few seconds.
+JOB_LIST_COLUMNS = ("id, runpod_job_id, status, task, quality, prompt_text, error, "
+                    "gen_id, poll_errors, created_at, updated_at")
 
 
 def _now() -> str:
@@ -151,7 +157,8 @@ class Database:
 
     def list_jobs(self, limit: int = 50) -> list[dict]:
         rows = self.conn.execute(
-            "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
+            f"SELECT {JOB_LIST_COLUMNS} FROM jobs ORDER BY created_at DESC LIMIT ?",
+            (limit,)).fetchall()
         return [dict(r) for r in rows]
 
     # -- generations ----------------------------------------------------------

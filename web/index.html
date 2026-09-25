@@ -4,22 +4,18 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Nocturne Video</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..900;1,9..144,300..900&family=IBM+Plex+Sans:wght@300;400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-<div class="grain" aria-hidden="true"></div>
 
 <header class="topbar">
   <div class="brand">
-    <span class="brand-nocturne">Nocturne</span>
-    <span class="brand-video">VIDEO</span>
+    <span class="brand-nocturne">Nocturne Video</span>
+    <span class="brand-video">H3</span>
   </div>
   <div class="beacons" id="beacons">
-    <span class="beacon" id="beacon-endpoint" data-state="off"><i></i>ENDPOINT</span>
-    <span class="beacon" id="beacon-s3" data-state="off"><i></i>STORAGE</span>
+    <span class="beacon" id="beacon-endpoint" data-state="off"><i></i>Endpoint</span>
+    <span class="beacon" id="beacon-s3" data-state="off"><i></i>Storage</span>
   </div>
   <div class="topbar-actions">
     <button class="ghost-btn" id="btn-healthcheck" title="Verify the volume and stage any missing weights">Stage volume</button>
@@ -45,10 +41,10 @@
         <button class="mode-pill" data-mode="flf2va" role="tab">FLF2VA</button>
         <button class="mode-pill" data-mode="ref2va" role="tab">REF2VA</button>
       </div>
-      <div class="segmented" role="radiogroup" aria-label="Pace" id="quality-seg">
-        <button class="seg" data-quality="turbo" title="Distilled: euler / simple, 8 steps, shift 7 and 4.5">Draft · 8 steps</button>
-        <button class="seg active" data-quality="quality" title="res_multistep / simple, 25 steps, shift 11 and 4">Final · 25 steps</button>
-        <button class="seg" data-quality="custom" disabled>Custom</button>
+      <div class="segmented" role="radiogroup" aria-label="Render tier" id="quality-seg">
+        <button class="seg" data-quality="draft" title="euler / simple, 8 steps, shift 7 and 4.5">Draft<small>8 steps</small></button>
+        <button class="seg active" data-quality="studio" title="res_multistep / simple, 20 steps, shift 10 and 4">Studio<small>20 steps</small></button>
+        <button class="seg" data-quality="final" title="res_multistep / simple, 25 steps, shift 11 and 4">Final<small>25 steps</small></button>
       </div>
       <div class="prompt-blocks" id="prompt-blocks"><!-- sections injected --></div>
     </div>
@@ -271,8 +267,35 @@
 
   <!-- ============ RIGHT: render queue ============ -->
   <section class="panel panel-queue" aria-label="Render queue">
-    <div class="queue-head"><span class="field-label">Render queue</span><span class="mono dim" id="queue-count"></span></div>
-    <ul class="queue-list" id="queue-list"></ul>
+    <div class="queue-head">
+      <span class="pulse" id="queue-pulse"></span>
+      <strong id="queue-status">Idle</strong>
+      <span class="mono" id="queue-count"></span>
+    </div>
+
+    <div class="api-strip">
+      <div class="api-strip-head">
+        <span>Endpoint</span>
+        <b id="api-state">checking…</b>
+      </div>
+      <div class="progress-track"><div class="progress-fill" id="api-progress"></div></div>
+      <div class="api-facts">
+        <div class="api-fact"><small>Workers ready</small><strong id="api-workers">—</strong></div>
+        <div class="api-fact"><small>In queue</small><strong id="api-queue">—</strong></div>
+        <div class="api-fact"><small>Running</small><strong id="api-running">—</strong></div>
+        <div class="api-fact"><small>Completed</small><strong id="api-completed">—</strong></div>
+        <div class="api-fact"><small>Current job</small><strong id="api-job">—</strong></div>
+        <div class="api-fact"><small>Elapsed</small><strong id="api-elapsed">—</strong></div>
+      </div>
+    </div>
+
+    <div>
+      <div class="api-strip-head" style="margin-bottom:8px">
+        <span>Recent jobs</span>
+        <b id="queue-total"></b>
+      </div>
+      <ul class="queue-list" id="queue-list"></ul>
+    </div>
 
     <div class="storage-block">
       <span class="field-label">Storage</span>

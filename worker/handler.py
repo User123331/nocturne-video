@@ -133,7 +133,54 @@ class JobError(ValueError):
     """User-facing errors returned as a normal failed job response."""
 
 
+_IMAGE_MAGIC = [
+    (b"\x89PNG\r\n\x1a\n", ".png"),
+    (b"\xff\xd8\xff", ".jpg"),
+    (b"GIF87a", ".gif"),
+    (b"GIF89a", ".gif"),
+    (b"BM", ".bmp"),
+]
+_AUDIO_MAGIC = [
+    (b"RIFF", ".wav"),          # RIFF....WAVE
+    (b"ID3", ".mp3"),
+    (b"\xff\xfb", ".mp3"),
+    (b"\xff\xf3", ".mp3"),
+    (b"fLaC", ".flac"),
+    (b"OggS", ".ogg"),
+]
+_VIDEO_MAGIC = [
+    (b"\x1aE\xdf\xa3", ".webm"),
+]
+
+
+def _sniff_suffix(raw: bytes, want_audio: bool) -> str | None:
+    """Identify the uploaded container from its leading bytes.
+
+    The suffix cannot come from the caller's hint (that is a fixed string per
+    slot), so a WebP or GIF first frame used to be written with a .png name and
+    then fail inside ComfyUI's image loader with a decode error.
+    """
+    table = _AUDIO_MAGIC if want_audio else _IMAGE_MAGIC + _VIDEO_MAGIC
+    for magic, suffix in table:
+        if raw.startswith(magic):
+            if suffix == ".wav" and raw[8:12] != b"WAVE":
+                continue
+            return suffix
+    # WebP is RIFF....WEBP, which shares the RIFF prefix with WAV.
+    if raw.startswith(b"RIFF") and raw[8:12] == b"WEBP":
+        return ".webp" if not want_audio else None
+    # MP4/M4A family: 'ftyp' at offset 4.
+    if len(raw) > 12 and raw[4:8] == b"ftyp":
+        brand = raw[8:12]
+        if want_audio and brand in (b"M4A ", b"mp42", b"isom"):
+            return ".m4a"
+        if not want_audio and brand in (b"isom", b"mp42", b"avc1"):
+            return ".mp4"
+    return None
+
+
 def _write_upload(data_b64: str, dest_dir: Path, stem: str, kind_hint: str) -> str:
+    want_audio = "audio" in kind_hint
     try:
         raw = base64.b64decode(data_b64, validate=False)
     except (binascii.Error, ValueError) as exc:
@@ -142,9 +189,12 @@ def _write_upload(data_b64: str, dest_dir: Path, stem: str, kind_hint: str) -> s
         raise JobError(f"{kind_hint}: empty upload")
     if len(raw) > MAX_UPLOAD_BYTES:
         raise JobError(f"{kind_hint}: upload exceeds {MAX_UPLOAD_BYTES // (1024 * 1024)} MiB limit")
-    suffix = Path(kind_hint).suffix.lower() or ".png"
-    if suffix not in ALLOWED_UPLOAD_SUFFIXES:
-        raise JobError(f"{kind_hint}: unsupported file type")
+    suffix = _sniff_suffix(raw, want_audio)
+    if suffix is None:
+        kind = "audio" if want_audio else "image"
+        raise JobError(
+            f"{kind_hint}: not a recognised {kind} file "
+            f"(allowed: {', '.join(sorted(ALLOWED_UPLOAD_SUFFIXES))})")
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / f"{stem}{suffix}"
     dest.write_bytes(raw)

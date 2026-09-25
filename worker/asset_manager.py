@@ -168,7 +168,11 @@ def ensure_assets(required: list[str], *, allow_downloads: bool = False,
             try:
                 if marker.is_file():
                     recorded = json.loads(marker.read_text())
-                    if recorded.get("bytes") == asset["bytes"]:
+                    # The marker must agree on BOTH size and hash. Comparing
+                    # size alone would accept a file whose content changed at
+                    # the same length, or one pinned to a corrected hash.
+                    if (recorded.get("bytes") == asset["bytes"]
+                            and recorded.get("sha256") == asset.get("sha256")):
                         return slug, path, None
             except (OSError, ValueError):
                 pass

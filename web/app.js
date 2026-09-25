@@ -21,17 +21,26 @@ const PROMPT_SECTION_KEYS = new Set([
   "subject_definitions", "summary", "retention_analysis", "detailed_description",
 ]);
 
-/* The two recommended settings blocks from the workflow, and what they set. */
+/* The three render tiers, filled with the workflow's own recommended
+   settings (its Settings note lists, for the distilled build: euler/simple or
+   lcm, shifts 6-12 video and 3-5 audio, 4 or 8 steps; for the non-distilled
+   build: res_multistep/simple or euler, shifts 10-12 and 3-5, 20-25 steps).
+   Draft is the distilled path, Studio and Final are the non-distilled one at
+   the low and high end of the recommended step and shift ranges. */
 const QUALITY_PRESETS = {
-  turbo: { sampler_name: "euler", scheduler: "simple", steps: 8, shift_video: 7, shift_audio: 4.5 },
-  quality: { sampler_name: "res_multistep", scheduler: "simple", steps: 25, shift_video: 11, shift_audio: 4 },
+  draft: { sampler_name: "euler", scheduler: "simple", steps: 8, shift_video: 7, shift_audio: 4.5 },
+  studio: { sampler_name: "res_multistep", scheduler: "simple", steps: 20, shift_video: 10, shift_audio: 4 },
+  final: { sampler_name: "res_multistep", scheduler: "simple", steps: 25, shift_video: 11, shift_audio: 4 },
 };
+/* What the worker maps each tier to when no explicit fields are sent. */
+const WORKER_QUALITY = { draft: "turbo", studio: "quality", final: "quality" };
 
 const MP = 1024 * 1024;
 
 const state = {
   mode: "t2va",
-  quality: "quality",
+  quality: "studio",
+  tierEdited: false,
   aspect: "auto",
   sections: {},
   files: { first_frame: null, last_frame: null, ref_images: [], ref_audios: [] },
@@ -153,6 +162,7 @@ function updateInterpNote() {
 
 function applyQualityPreset(name) {
   const preset = QUALITY_PRESETS[name];
+  if (!preset) return;
   $("#sampler").value = preset.sampler_name;
   $("#scheduler").value = preset.scheduler;
   $("#steps").value = preset.steps;
@@ -165,22 +175,29 @@ function setQuality(name) {
   state.quality = name;
   $$("#quality-seg .seg").forEach((s) => {
     s.classList.toggle("active", s.dataset.quality === name);
-    s.disabled = s.dataset.quality === "custom" && name !== "custom";
   });
   $("#sampler-note").textContent = name === "custom"
-    ? "custom"
-    : `${QUALITY_PRESETS[name].sampler_name} · ${QUALITY_PRESETS[name].steps}`;
+    ? "custom values"
+    : `${QUALITY_PRESETS[name].sampler_name} · ${QUALITY_PRESETS[name].steps} steps`;
 }
 
+/* Editing a field by hand leaves the tier buttons alone but records that the
+   values no longer match a preset, so generate() sends them explicitly. */
 function markCustomIfEdited() {
-  const p = QUALITY_PRESETS[state.quality];
-  if (!p) return; // already custom
-  const edited = $("#sampler").value !== p.sampler_name
-    || $("#scheduler").value !== p.scheduler
-    || Number($("#steps").value) !== p.steps
-    || Number($("#shift_video").value) !== p.shift_video
-    || Number($("#shift_audio").value) !== p.shift_audio;
-  if (edited) setQuality("custom");
+  const preset = QUALITY_PRESETS[state.quality];
+  if (!preset) return;
+  const edited = $("#sampler").value !== preset.sampler_name
+    || $("#scheduler").value !== preset.scheduler
+    || Number($("#steps").value) !== preset.steps
+    || Number($("#shift_video").value) !== preset.shift_video
+    || Number($("#shift_audio").value) !== preset.shift_audio;
+  $$("#quality-seg .seg").forEach((s) => {
+    s.classList.toggle("active", !edited && s.dataset.quality === state.quality);
+  });
+  $("#sampler-note").textContent = edited
+    ? "custom values"
+    : `${preset.sampler_name} · ${preset.steps} steps`;
+  state.tierEdited = edited;
 }
 
 /* ---------- prompt sections per mode ---------- */
@@ -393,7 +410,9 @@ async function generate() {
   const { width, height } = computeResolution();
   const body = {
     task: state.mode,
-    quality: state.quality === "custom" ? "quality" : state.quality,
+    // The tier maps to the worker's preset name; when a field was hand-edited
+    // the explicit values below override whatever the preset would have set.
+    quality: WORKER_QUALITY[state.quality] || "quality",
     prompt,
     files,
     duration_seconds: Number($("#duration").value),
@@ -403,17 +422,18 @@ async function generate() {
   };
   if (state.mode === "ref2va") body.ref_image_size = $("#ref-image-size").value;
 
-  // Sampling: preset quality keeps worker defaults; Custom sends every field.
-  if (state.quality === "custom") {
-    const fields = {
-      steps: $("#steps").value, sampler_name: $("#sampler").value,
-      scheduler: $("#scheduler").value,
-      shift_video: $("#shift_video").value, shift_audio: $("#shift_audio").value,
-    };
-    for (const [k, v] of Object.entries(fields)) {
-      if (v === "") { toast(`Custom pace needs ${k.replace("_", " ")}`); return; }
-      body[k] = Number.isNaN(Number(v)) ? v : Number(v);
-    }
+  // Always send the sampling values that are on screen: they are either the
+  // tier's recommended settings or the user's edits, and sending them keeps the
+  // record exact and makes /reuse faithful.
+  const fields = {
+    steps: $("#steps").value, sampler_name: $("#sampler").value,
+    scheduler: $("#scheduler").value,
+    shift_video: $("#shift_video").value, shift_audio: $("#shift_audio").value,
+  };
+  for (const [key, value] of Object.entries(fields)) {
+    if (value === "") continue;
+    const numeric = Number(value);
+    body[key] = Number.isNaN(numeric) ? value : numeric;
   }
   if ($("#seed").value && $("#seed").value !== "random") body.seed = Number($("#seed").value);
   if ($("#frame-interp").checked) {
@@ -464,36 +484,139 @@ async function generate() {
   }
 }
 
-/* ---------- queue ---------- */
+/* ---------- queue + endpoint status ---------- */
+
+const PHASE_LABEL = {
+  QUEUED: "Waiting for GPU", RUNNING: "Rendering", COMPLETED: "Done",
+  FAILED: "Failed", CANCELLED: "Cancelled",
+};
+
+function elapsed(sinceIso) {
+  if (!sinceIso) return "—";
+  const start = new Date(sinceIso.endsWith("Z") ? sinceIso : sinceIso + "Z").getTime();
+  const seconds = Math.max(0, Math.floor((Date.now() - start) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s`;
+}
+
+/* The endpoint's own counters, read from GET /health: how many workers are
+   warm, what is queued, and what is running right now. This is the honest
+   signal for "is the API actually working", so it drives the progress bar. */
+function renderEndpointStatus(health) {
+  const stateEl = $("#api-state");
+  const fill = $("#api-progress");
+  const set = (id, value) => { $(`#${id}`).textContent = value; };
+  if (!health || health.error) {
+    stateEl.textContent = "unreachable";
+    fill.className = "progress-fill err";
+    fill.style.width = "100%";
+    set("api-workers", "—"); set("api-queue", "—");
+    set("api-running", "—"); set("api-completed", "—");
+    return;
+  }
+  const workers = health.workers || {};
+  const jobs = health.jobs || {};
+  const ready = workers.ready ?? 0;
+  const throttled = workers.throttled ?? 0;
+  const unhealthy = workers.unhealthy ?? 0;
+  const inQueue = jobs.inQueue ?? 0;
+  const running = jobs.inProgress ?? 0;
+  const completed = jobs.completed ?? 0;
+  set("api-workers", String(ready));
+  set("api-queue", String(inQueue));
+  set("api-running", String(running));
+  set("api-completed", String(completed));
+
+  // A worker that is warm and idle means the next job starts immediately;
+  // otherwise the bar shows that we are waiting on capacity. Throttled workers
+  // exist but are paused by the account's quota, which is a different problem
+  // from a cold start and needs saying so.
+  if (running > 0) {
+    stateEl.textContent = "rendering";
+    fill.className = "progress-fill indeterminate";
+    fill.style.width = "";
+  } else if (inQueue > 0) {
+    stateEl.textContent = ready > 0 ? "dispatching" : "waiting for capacity";
+    fill.className = "progress-fill indeterminate";
+    fill.style.width = "";
+  } else if (ready > 0) {
+    stateEl.textContent = "ready";
+    fill.className = "progress-fill done";
+    fill.style.width = "100%";
+  } else if (throttled > 0) {
+    stateEl.textContent = `${throttled} throttled`;
+    fill.className = "progress-fill err";
+    fill.style.width = "100%";
+  } else if (unhealthy > 0) {
+    stateEl.textContent = `${unhealthy} unhealthy`;
+    fill.className = "progress-fill err";
+    fill.style.width = "100%";
+  } else {
+    stateEl.textContent = "cold start";
+    fill.className = "progress-fill";
+    fill.style.width = "0%";
+  }
+}
 
 async function refreshQueue() {
   let jobs = [];
   try {
     ({ jobs } = await api("/api/jobs?limit=12"));
   } catch { return; }
+
+  const active = jobs.filter((j) => ["QUEUED", "RUNNING"].includes(j.status));
+  const newest = jobs[0];
+  const pulse = $("#queue-pulse");
+  pulse.className = "pulse";
+  if (active.length) {
+    pulse.classList.add("live");
+    $("#queue-status").textContent = active.some((j) => j.status === "RUNNING")
+      ? "Rendering" : "Queued";
+  } else if (newest && newest.status === "FAILED") {
+    pulse.classList.add("err");
+    $("#queue-status").textContent = "Last job failed";
+  } else if (newest) {
+    pulse.classList.add("done");
+    $("#queue-status").textContent = "Idle";
+  } else {
+    $("#queue-status").textContent = "Idle";
+  }
+  $("#queue-count").textContent = active.length ? `${active.length} active` : "";
+  $("#queue-total").textContent = jobs.length ? `${jobs.length} shown` : "";
+
+  // Current job + elapsed, from the most recent active job.
+  const current = active[0];
+  state.currentStartedAt = current ? current.created_at : null;
+  if (current) {
+    $("#api-job").textContent = `${current.task.toUpperCase()} ${current.id.slice(-6)}`;
+    $("#api-elapsed").textContent = elapsed(current.created_at);
+  } else {
+    $("#api-job").textContent = "—";
+    $("#api-elapsed").textContent = newest ? elapsed(newest.created_at) + " ago" : "—";
+  }
+
   const list = $("#queue-list");
   list.innerHTML = "";
-  const active = jobs.filter((j) => ["QUEUED", "RUNNING"].includes(j.status)).length;
-  $("#queue-count").textContent = active ? `${active} running` : "idle";
   if (!jobs.length) {
-    list.innerHTML = '<li class="queue-empty">no jobs yet</li>';
+    list.innerHTML = '<li class="queue-empty">No jobs yet.</li>';
     return;
   }
   for (const job of jobs) {
     const li = document.createElement("li");
     li.className = "queue-item";
     const cls = { QUEUED: "run", RUNNING: "run", COMPLETED: "done", FAILED: "fail", CANCELLED: "fail" }[job.status] || "";
-    const created = new Date(job.created_at.endsWith("Z") ? job.created_at : job.created_at + "Z").toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    const when = new Date(job.created_at.endsWith("Z") ? job.created_at : job.created_at + "Z")
+      .toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    const canCancel = ["QUEUED", "RUNNING"].includes(job.status);
     li.innerHTML = `
       <div class="queue-item-top">
         <span class="qdot ${cls}"></span>
         <span class="qtask">${job.task.toUpperCase()}</span>
-        <span class="qid mono">${job.id.slice(-10)}</span>
-        ${["QUEUED", "RUNNING"].includes(job.status)
-          ? '<button class="queue-cancel" title="Cancel">×</button>' : ""}
+        <span class="qid mono">${job.id.slice(-6)}</span>
+        ${canCancel ? '<button class="queue-cancel" title="Cancel this job">×</button>' : ""}
       </div>
-      <div class="qmeta mono"><span>${job.status}</span><span>${created}</span></div>
-      ${job.error ? `<div class="qmeta mono" style="color:var(--red)"><span>${job.error.slice(0, 140)}</span></div>` : ""}`;
+      <div class="qmeta mono"><span>${PHASE_LABEL[job.status] || job.status}</span><span>${when}</span></div>
+      ${job.error ? `<div class="qmeta mono"><span class="err" title="${escapeHtml(job.error)}">${escapeHtml(job.error.slice(0, 90))}</span></div>` : ""}`;
     li.querySelector(".queue-cancel")?.addEventListener("click", async () => {
       try { await api(`/api/jobs/${job.id}/cancel`, { method: "POST" }); refreshQueue(); }
       catch (err) { toast(err.message, "err"); }
@@ -573,6 +696,7 @@ function renderCard(gen) {
       <div class="card-tags">
         <span class="tag">${gen.task.toUpperCase()}</span>
         ${gen.quality === "turbo" ? '<span class="tag plain">DRAFT</span>' : ""}
+        ${gen.quality === "custom" ? '<span class="tag plain">CUSTOM</span>' : ""}
         ${gen.width ? `<span class="tag plain">${gen.width}×${gen.height}</span>` : ""}
         ${userTags}
         ${local}
@@ -653,7 +777,13 @@ function detailFields(gen) {
     ["Duration", `${(gen.duration ?? meta.duration_seconds ?? 0).toFixed(2)}s · ${gen.frames ?? "—"}f`],
     ["Shifts", `${meta.shift_video ?? "—"} video / ${meta.shift_audio ?? "—"} audio`],
     ["Checkpoint", (meta.checkpoint || "").replace("dasiwa-hybrid-v2-", "Hybrid v2 ")] ,
-    ["Pace", gen.quality === "turbo" ? "Draft · distilled" : "Final · 25 steps"],
+    ["Tier", (() => {
+      const hit = Object.entries(QUALITY_PRESETS).find(([, p]) =>
+        p.sampler_name === meta.sampler_name && p.steps === meta.steps
+        && p.shift_video === meta.shift_video);
+      if (hit) return hit[0][0].toUpperCase() + hit[0].slice(1);
+      return `${meta.steps ?? "?"} steps · custom`;
+    })()],
     ["Interpolation", meta.frame_interpolation ? `RIFE ×${meta.interpolation_multiplier}` : "Off"],
     ["Upscale", upLabel],
     ["Cache", meta.cache ? `on · reuse ${meta.cache.reuse_threshold}` : "Off"],
@@ -790,8 +920,9 @@ async function reuseSettings() {
       p.sampler_name === eff.sampler_name && p.scheduler === eff.scheduler
       && p.steps === eff.steps && p.shift_video === eff.shift_video
       && p.shift_audio === eff.shift_audio);
-    if (matches) applyQualityPreset(matches[0]);
-    else {
+    if (matches) {
+      applyQualityPreset(matches[0]);
+    } else {
       $("#sampler").value = eff.sampler_name || "";
       $("#scheduler").value = eff.scheduler || "";
       $("#steps").value = eff.steps ?? "";
@@ -859,15 +990,23 @@ async function bootstrap() {
   try {
     const data = await api("/api/bootstrap");
     const beaconEndpoint = $("#beacon-endpoint");
-    if (!data.endpoint_id) setBeacon("endpoint", "err", "no endpoint");
-    else if (data.endpoint_health?.error) setBeacon("endpoint", "err", "unreachable");
-    else { setBeacon("endpoint", "ok", data.endpoint_id); }
+    if (!data.endpoint_id) {
+      setBeacon("endpoint", "err", "no endpoint");
+      renderEndpointStatus(null);
+    } else if (data.endpoint_health?.error) {
+      setBeacon("endpoint", "err", "unreachable");
+      renderEndpointStatus({ error: data.endpoint_health.error });
+    } else {
+      setBeacon("endpoint", "ok", data.endpoint_id);
+      renderEndpointStatus(data.endpoint_health);
+    }
     const s3 = data.s3 || {};
     if (!s3.configured) setBeacon("s3", "err", "no credentials");
     else if (s3.error) setBeacon("s3", "err", "unreachable");
     else { setBeacon("s3", "ok", `${s3.objects} objects`); $("#s3-objects").textContent = s3.objects; $("#s3-bytes").textContent = bytesFmt(s3.bytes); }
   } catch (err) {
     setBeacon("endpoint", "err", err.message);
+    renderEndpointStatus({ error: err.message });
   }
 }
 
@@ -901,8 +1040,6 @@ function addLoraRow(name = "", strength = 1) {
 function init() {
   $$(".mode-pill").forEach((pill) => pill.addEventListener("click", () => setMode(pill.dataset.mode)));
   $$("#quality-seg .seg").forEach((seg) => seg.addEventListener("click", () => {
-    if (seg.disabled) return;
-    if (seg.dataset.quality === "custom") { setQuality("custom"); return; }
     applyQualityPreset(seg.dataset.quality);
   }));
   for (const id of ["sampler", "scheduler", "steps", "shift_video", "shift_audio"]) {
@@ -1040,13 +1177,18 @@ function init() {
     if (openSlots.length) await assignFile(openSlots[0], file);
   });
   setMode("t2va");
-  applyQualityPreset("quality");
+  applyQualityPreset("studio");
   updateDurationReadout();
   updateCanvasReadout();
+  refreshBootstrapLoop();
   refreshQueue();
   refreshLibrary();
   setInterval(refreshQueue, 5000);
   setInterval(refreshLibrary, 30000);
+  // Tick the elapsed clock between queue polls so a long render visibly moves.
+  setInterval(() => {
+    if (state.currentStartedAt) $("#api-elapsed").textContent = elapsed(state.currentStartedAt);
+  }, 1000);
 }
 
 function refreshBootstrapLoop() {

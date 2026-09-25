@@ -66,7 +66,15 @@ def frames_for_duration(duration_seconds: float, fps: int = FPS) -> int:
         raise SpecError("duration_seconds must be between 1 and 15")
     if not MIN_FPS <= int(fps) <= MAX_FPS:
         raise SpecError(f"fps must be {MIN_FPS}..{MAX_FPS}")
-    return align_frame_count(max(MIN_FRAMES, round(duration_seconds * int(fps))))
+    frames = align_frame_count(max(MIN_FRAMES, round(duration_seconds * int(fps))))
+    # The model is trained on roughly 124-362 frames. Duration and fps are each
+    # in range on their own, but their product is not: 15 s at 48 fps asks for
+    # 736 frames, far outside the trained range and certain to degrade.
+    if frames > MAX_FRAMES:
+        raise SpecError(
+            f"{duration_seconds:g}s at {int(fps)} fps needs {frames} frames, over the "
+            f"{MAX_FRAMES}-frame maximum; shorten the clip or lower the frame rate")
+    return frames
 
 
 def clamp_canvas(width: int, height: int) -> tuple[int, int]:
@@ -367,6 +375,19 @@ def build_graph(
             workflow[nid] = _n(nid, "LoadImage", {"image": f"{upload_dir}/{ref}"})
             grow[f"ref_image_{i}"] = [nid, 0]
         cond_inputs["ref_images"] = grow
+        # Standalone reference audio: the node's ref_audios autogrow takes the
+        # same prefix/numbering convention as ref_images, so <Audio j> tags in
+        # the prompt line up with the staged files.
+        ref_audios = spec.get("ref_audios") or []
+        if len(ref_audios) > 3:
+            raise SpecError("ref2va accepts at most 3 reference audios")
+        if ref_audios:
+            audio_grow: dict[str, Any] = {}
+            for i, ref in enumerate(ref_audios, start=1):
+                nid = f"23{i}"
+                workflow[nid] = _n(nid, "LoadAudio", {"audio": f"{upload_dir}/{ref}"})
+                audio_grow[f"ref_audio_{i}"] = [nid, 0]
+            cond_inputs["ref_audios"] = audio_grow
         workflow["5"] = _n("5", "MiniMaxH3ReferenceToVideo", cond_inputs)
     else:
         cond_inputs = {
