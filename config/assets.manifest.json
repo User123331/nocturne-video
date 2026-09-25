@@ -23,7 +23,7 @@
       "file_id": 3203307,
       "filename": "dasiwa_hybrid_v2_int4.safetensors",
       "relative_dir": "MiniMaxH3",
-      "bytes": 12536864413,
+      "bytes": 12540864413,
       "sha256": "780E7A2F43313B5D8D380DE89BCCF1A4815EE9ED885259A86B21681CC3A946FB",
       "requires_token": true,
       "usage_note": "DaSiWa Hybrid v2 int4 build for lower-VRAM GPUs (24-32GB). Same finetune, lighter quant."
