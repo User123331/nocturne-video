@@ -174,6 +174,43 @@ class ValidationTests(unittest.TestCase):
         with self.assertRaises(self.service.ServiceError):
             self.submit(task="ref2va")
 
+    def test_single_frame_media_shape(self):
+        """first_frame/last_frame are single base64 strings from the dashboard.
+
+        They were briefly validated as lists, which rejected every i2va and
+        flf2va job with "files.first_frame must be a list".
+        """
+        import json as _json
+        import urllib.request
+        from unittest import mock
+        captured = {}
+
+        def fake_run(spec):
+            captured.update(spec)
+            return {"id": "rp-test"}
+
+        with mock.patch.object(self.service.runpod_client, "run", fake_run):
+            result = self.submit(task="flf2va",
+                                 files={"first_frame": "AAA", "last_frame": "BBB"})
+        self.assertEqual(result["runpod_job_id"], "rp-test")
+        self.assertEqual(captured["first_frame_b64"], "AAA")
+        self.assertEqual(captured["last_frame_b64"], "BBB")
+        # A one-element list is accepted for the same slots.
+        with mock.patch.object(self.service.runpod_client, "run", fake_run):
+            self.submit(task="i2va", files={"first_frame": ["CCC"]})
+        self.assertEqual(captured["first_frame_b64"], "CCC")
+        # A dict is still rejected.
+        with self.assertRaises(self.service.ServiceError):
+            self.submit(task="i2va", files={"first_frame": {"a": 1}})
+        # Lists still work for the multi slots, with the limit enforced.
+        with mock.patch.object(self.service.runpod_client, "run", fake_run):
+            self.submit(task="ref2va", files={"ref_images": ["A", "B"],
+                                              "ref_audios": ["C"]})
+        self.assertEqual(captured["ref_images_b64"], ["A", "B"])
+        self.assertEqual(captured["ref_audios_b64"], ["C"])
+        with self.assertRaises(self.service.ServiceError):
+            self.submit(task="ref2va", files={"ref_images": ["x"] * 10})
+
 
 class SigV4Tests(unittest.TestCase):
     def test_signer_builds_request_without_crashing(self):

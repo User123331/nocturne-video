@@ -132,13 +132,19 @@ class Service:
                 })
             if loras:
                 spec["loras"] = loras[:10]
+        # first_frame and last_frame are single images; ref_images and ref_audios
+        # are lists. Accept a one-element list for the single slots too, so a
+        # caller that sends either shape works.
         for field, limit in (("first_frame", 1), ("last_frame", 1),
                              ("ref_images", 9), ("ref_audios", 3)):
             value = files.get(field)
             if not value:
                 continue
+            if limit == 1 and isinstance(value, str):
+                value = [value]
             if not isinstance(value, list):
-                raise ServiceError(f"files.{field} must be a list")
+                shape = "an image" if limit == 1 else "a list"
+                raise ServiceError(f"files.{field} must be {shape}")
             cleaned = [v for v in value if isinstance(v, str) and v.strip()]
             if len(cleaned) > limit:
                 raise ServiceError(f"files.{field} accepts at most {limit}")
