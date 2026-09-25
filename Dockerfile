@@ -69,6 +69,10 @@ RUN uv pip install --python /opt/venv/bin/python \
     "gguf==0.10.0"
 
 ARG VERIFY_TIMEOUT=300
+# The gate imports workflow_factory and reads the manifest, so worker/ and
+# config/ must be present before it runs.
+COPY config/ ${APP_ROOT}/config/
+COPY worker/ ${APP_ROOT}/worker/
 COPY scripts/verify-comfy-nodes.py /usr/local/bin/verify-comfy-nodes.py
 RUN chmod 0555 /usr/local/bin/verify-comfy-nodes.py \
     && timeout ${VERIFY_TIMEOUT} /opt/venv/bin/python /usr/local/bin/verify-comfy-nodes.py
@@ -78,8 +82,6 @@ RUN chmod 0555 /usr/local/bin/verify-comfy-nodes.py \
 RUN mv /handler.py /handler_upstream.py \
     && mv /start.sh /start-upstream.sh
 
-COPY config/ ${APP_ROOT}/config/
-COPY worker/ ${APP_ROOT}/worker/
 COPY docker/start.sh /start.sh
 COPY worker/handler.py /handler.py
 

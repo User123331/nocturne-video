@@ -293,10 +293,10 @@ def build_graph(
     workflow["9"] = _n("9", "BasicScheduler", {
         "model": sampled_model, "scheduler": scheduler, "steps": steps, "denoise": 1.0,
     })
-    workflow["10"] = _n("10", "BasicGuider", {"model": sampled_model, "positive": ["5", 0]})
+    workflow["10"] = _n("10", "BasicGuider", {"model": sampled_model, "conditioning": ["5", 0]})
     workflow["11"] = _n("11", "SamplerCustomAdvanced", {
         "noise": ["7", 0], "guider": ["10", 0], "sampler": ["8", 0],
-        "sigmas": ["9", 0], "latent": ["5", 1],
+        "sigmas": ["9", 0], "latent_image": ["5", 1],
     })
     workflow["12"] = _n("12", "VAEDecode", {"samples": ["11", 0], "vae": ["3", 0]})
     workflow["13"] = _n("13", "VAEDecodeAudio", {"samples": ["11", 0], "vae": ["4", 0]})
