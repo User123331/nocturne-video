@@ -151,12 +151,20 @@ def validate_graph_inputs(graphs: dict, object_info: dict) -> list:
                         f"(valid: {sorted(valid)})")
                     continue
                 spec_in = (inp.get("required") or {}).get(iname) or (inp.get("optional") or {}).get(iname)
+                # Combo validation applies only to non-empty option lists. The
+                # file-picker combos (unet_name, vae_name, watermark_path,
+                # model_name, image, ...) list files from disk, and during the
+                # build the volume is not mounted and the folders are empty, so
+                # an empty list means "resolved at runtime", not "invalid".
+                # Some packs answer with a placeholder like
+                # "(no .safetensors upscale models found in: ...)" instead.
                 if (isinstance(spec_in, (list, tuple)) and spec_in
-                        and isinstance(spec_in[0], (list, tuple))
+                        and isinstance(spec_in[0], (list, tuple)) and len(spec_in[0]) > 0
+                        and not any(str(opt).startswith("(") for opt in spec_in[0])
                         and isinstance(ivalue, str) and ivalue not in spec_in[0]):
                     problems.append(
                         f"{gname}/{nid} ({ct}): {iname}={ivalue!r} not in combo "
-                        f"{spec_in[0][:12]}")
+                        f"{list(spec_in[0])[:12]}")
     return problems
 
 
