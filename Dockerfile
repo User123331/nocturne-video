@@ -49,9 +49,10 @@ RUN uv pip install --python /opt/venv/bin/python \
     "matplotlib==3.11.2" \
     "gguf==0.10.0"
 
+ARG VERIFY_TIMEOUT=300
 COPY scripts/verify-comfy-nodes.py /usr/local/bin/verify-comfy-nodes.py
 RUN chmod 0555 /usr/local/bin/verify-comfy-nodes.py \
-    && timeout 300 /opt/venv/bin/python /usr/local/bin/verify-comfy-nodes.py
+    && timeout ${VERIFY_TIMEOUT} /opt/venv/bin/python /usr/local/bin/verify-comfy-nodes.py
 
 # Preserve the upstream handler and entrypoint so our thin wrapper can
 # delegate ComfyUI execution and Runpod output handling to the base image.
