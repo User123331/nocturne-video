@@ -10,10 +10,20 @@ USER root
 # interpolation) must exist, so advance ComfyUI to a tag verified to ship
 # nodes_minimax_h3.py and nodes_frame_interpolation.py.
 ARG COMFYUI_TAG=v0.37.2
+# torch is pinned FIRST to the +cu128 wheels, exactly as this base image does:
+# ComfyUI's requirements.txt declares a bare `torch`, and default PyPI now
+# serves CUDA 13 builds, which fail CUDA init on hosts whose driver is 570/575.
+# Installing requirements.txt without this pin silently replaces the working
+# cu128 torch and every worker then dies in the upstream GPU pre-flight check.
 RUN cd /comfyui \
     && git fetch --tags --force \
     && git checkout "${COMFYUI_TAG}" \
-    && /opt/venv/bin/python -m pip install --no-cache-dir -r requirements.txt
+    && uv pip install --python /opt/venv/bin/python \
+         torch==2.11.0 torchvision==0.26.0 torchaudio==2.11.0 \
+         --index-url https://download.pytorch.org/whl/cu128 \
+    && uv pip install --python /opt/venv/bin/python -r requirements.txt \
+    && uv pip install --python /opt/venv/bin/python "transformers>=4.50.3,<5" "huggingface-hub<1.0" \
+    && /opt/venv/bin/python -c "import torch; assert torch.version.cuda.startswith('12.'), torch.version.cuda; print('torch', torch.__version__, 'cuda', torch.version.cuda)"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
