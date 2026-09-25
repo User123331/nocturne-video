@@ -175,12 +175,15 @@ def make_handler(server_state: NocturneServer):
     return Handler
 
 
-def main() -> None:
+def main(open_browser: bool = False) -> None:
     state = NocturneServer()
     config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     httpd = ThreadingHTTPServer((config.HOST, config.PORT), make_handler(state))
-    print(f"Nocturne Video dashboard: http://{config.HOST}:{config.PORT} "
+    url = f"http://{config.HOST}:{config.PORT}"
+    print(f"Nocturne Video dashboard: {url} "
           f"(endpoint: {config.endpoint_id() or 'not configured'})", flush=True)
+    if open_browser:
+        subprocess.Popen(["open", url])
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

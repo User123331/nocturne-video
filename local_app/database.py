@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 import time
 from pathlib import Path
 
@@ -56,11 +57,29 @@ class Database:
     def __init__(self, path: Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(str(self.path), check_same_thread=False)
-        self.conn.row_factory = sqlite3.Row
-        self.conn.execute("PRAGMA journal_mode=WAL")
-        self.conn.executescript(SCHEMA)
-        self.conn.commit()
+        self._local = threading.local()
+        conn = self._new_conn()
+        conn.executescript(SCHEMA)
+        conn.commit()
+        conn.close()
+
+    def _new_conn(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(str(self.path), timeout=30)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=30000")
+        return conn
+
+    @property
+    def conn(self) -> sqlite3.Connection:
+        # Per-thread connections: Python 3.9's sqlite3 segfaults in
+        # sqlite3Reprepare when one connection is shared across threads
+        # on this build, even when calls are externally serialized.
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            conn = self._new_conn()
+            self._local.conn = conn
+        return conn
 
     # -- jobs ---------------------------------------------------------------
 
