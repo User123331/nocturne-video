@@ -44,12 +44,19 @@ LoRA is already merged into it.
 
 ## Deploy flow
 
-1. Push to `main`, then publish a GitHub **release** (or run the
-   `build-image` workflow manually) → GHCR image
-   `ghcr.io/user123331/nocturne-video:<commit>`.
-2. `runpodctl template create` with that image + env (see docs/DEPLOY.md).
-3. Endpoint lives in **US-NE-1** (volume-locked). GPU pool: RTX PRO 6000
-   Blackwell 48 GB first, then PRO 6000 MIG 48GB, then H100 SXM.
+**Runpod's GitHub integration builds the image** (Serverless -> New Endpoint ->
+GitHub -> this repo/branch). Runpod pulls the repo, builds the Dockerfile on
+its own infrastructure, and stores the result in its registry as
+`registry.runpod.net/<owner>-<repo>-<branch>-dockerfile:<commit>`. This is the
+same path the sibling *Serverless Runpod Deck* uses; it needs no GitHub Actions
+and no CI billing. A push only takes effect once a GitHub **release** is
+published, which is what triggers the rebuild.
+
+The workflow in `.github/workflows/` is a fallback only and does not run on
+accounts where Actions is unavailable.
+
+Then point the template at the built image and the endpoint at the template
+(details, including the exact `runpodctl` calls, in `docs/DEPLOY.md`).
 4. First warm-up: send `{"task": "healthcheck"}` with
    `ASSET_SYNC_MODE=weights`, `ALLOW_MODEL_DOWNLOADS=1`, `CIVITAI_API_TOKEN`
    set — the worker stages the volume (~55 GB, one time). Then flip
