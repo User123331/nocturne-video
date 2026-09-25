@@ -275,6 +275,21 @@ async function generate() {
   for (const [k, v] of Object.entries(advanced)) {
     if (v !== "" && !(k === "seed" && v === "random")) body[k] = k === "seed" ? Number(v) : v;
   }
+  if ($("#frame-interp").checked) {
+    body.frame_interpolation = true;
+    body.interpolation_multiplier = 2;
+  }
+  if ($("#chunk-ffn").checked) {
+    body.chunk_ffn = true;
+    body.chunk_count = 4;
+  }
+  const loras = $$("#lora-rows .lora-row")
+    .map((row) => ({
+      name: row.querySelector(".lora-name").value.trim(),
+      strength: Number(row.querySelector(".strength").value || 1),
+    }))
+    .filter((l) => l.name);
+  if (loras.length) body.loras = loras;
 
   const btn = $("#btn-generate");
   btn.disabled = true;
@@ -379,7 +394,7 @@ async function loadIntoStage(gen) {
     <span><b>${(gen.task || "").toUpperCase()}</b></span>
     <span>seed <b>${gen.seed ?? "—"}</b></span>
     <span>${gen.width}×${gen.height}</span>
-    <span>${gen.frames}f · ${(gen.duration || 0).toFixed(1)}s</span>
+    <span>${gen.frames}f · ${(gen.duration || 0).toFixed(1)}s${meta.fps && meta.fps !== 24 ? ` · ${meta.fps}fps RIFE` : ""}</span>
     <span>${meta.steps || ""} steps · ${meta.sampler_name || ""}</span>
     <span>shift ${meta.shift_video ?? "—"} / ${meta.shift_audio ?? "—"}</span>
     <span class="dim">${(gen.sha256 || "").slice(0, 12)}</span>`;
@@ -421,6 +436,17 @@ function setMode(mode) {
   renderDropzones();
 }
 
+function addLoraRow(name = "", strength = 1) {
+  const row = document.createElement("div");
+  row.className = "lora-row";
+  row.innerHTML = `
+    <input type="text" class="input lora-name mono" placeholder="my_lora.safetensors" value="${name.replace(/"/g, "&quot;")}">
+    <input type="number" class="input strength mono" step="0.05" min="-4" max="4" value="${strength}">
+    <button type="button" class="icon-btn remove" title="Remove">×</button>`;
+  row.querySelector(".remove").addEventListener("click", () => row.remove());
+  $("#lora-rows").appendChild(row);
+}
+
 function init() {
   $$(".mode-pill").forEach((pill) => pill.addEventListener("click", () => setMode(pill.dataset.mode)));
   $$(".seg").forEach((seg) => seg.addEventListener("click", () => {
@@ -439,6 +465,7 @@ function init() {
   $("#btn-dice").addEventListener("click", () => {
     $("#seed").value = String(Math.floor(Math.random() * 2 ** 53));
   });
+  $("#btn-add-lora").addEventListener("click", () => addLoraRow());
   $("#btn-generate").addEventListener("click", generate);
   $("#library-search").addEventListener("input", debounce(refreshLibrary, 280));
   $("#btn-sync").addEventListener("click", async () => {

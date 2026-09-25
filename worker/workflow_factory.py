@@ -13,6 +13,7 @@ Reference material:
 
 from __future__ import annotations
 
+import json
 import math
 import random
 from typing import Any
@@ -191,29 +192,43 @@ def build_graph(
         "unet_name": paths[checkpoint_slug], "weight_dtype": "default",
     })
 
-    model_source = "1"
-    for idx, lora in enumerate(spec.get("loras") or [], start=1):
-        name = (lora.get("name") or "").strip()
-        if not name:
-            raise SpecError("lora entries need a name")
-        strength = float(lora.get("strength", 1.0))
-        if not -4.0 <= strength <= 4.0:
-            raise SpecError("lora strength must be within -4..4")
-        nid = f"10{idx}"
-        workflow[nid] = _n(nid, "LoraLoaderModelOnly", {
-            "lora_name": name, "strength_model": strength, "model": [model_source, 0],
-        })
-        model_source = nid
-
     workflow["2"] = _n("2", "CLIPLoader", {
         "clip_name": paths[te_slug], "type": "minimax", "device": "default",
     })
     workflow["3"] = _n("3", "VAELoader", {"vae_name": paths["video-vae-fp16"]})
     workflow["4"] = _n("4", "VAELoader", {"vae_name": paths["audio-vae-fp32"]})
 
+    # LoRA stack via DaSiWa's Advanced LoRA Loader (the workflow's
+    # DaSiWa_LTX2LoraLoader): one node, JSON stack of {on, lora, str, vs, as}.
+    # model_type=Basic applies every tensor universally — vs/as only separate
+    # on LTX-2.3, so for H3 the master strength is what matters.
+    model_source = ["1", 0]
+    clip_source = ["2", 0]
+    loras = [l for l in (spec.get("loras") or [])
+             if (l.get("name") or "").strip() not in ("", "None")]
+    if loras:
+        if len(loras) > 10:
+            raise SpecError("at most 10 LoRAs per job")
+        stack = []
+        for lora in loras:
+            name = (lora.get("name") or "").strip()
+            strength = float(lora.get("strength", 1.0))
+            if not -4.0 <= strength <= 4.0:
+                raise SpecError("lora strength must be within -4..4")
+            stack.append({"on": True, "lora": name, "str": strength, "vs": 1, "as": 1})
+        workflow["16"] = _n("16", "DaSiWa_LTX2LoraLoader", {
+            "model": model_source,
+            "clip": clip_source,
+            "stack_data": json.dumps(stack),
+            "model_type": "Basic",
+            "use_cache": False,
+        })
+        model_source = ["16", 0]
+        clip_source = ["16", 1]
+
     if task == "ref2va":
         cond_inputs: dict[str, Any] = {
-            "clip": ["2", 0],
+            "clip": clip_source,
             "vae": ["3", 0],
             "audio_vae": ["4", 0],
             "prompt": final_prompt,
@@ -234,7 +249,7 @@ def build_graph(
         workflow["5"] = _n("5", "MiniMaxH3ReferenceToVideo", cond_inputs)
     else:
         cond_inputs = {
-            "clip": ["2", 0],
+            "clip": clip_source,
             "vae": ["3", 0],
             "prompt": final_prompt,
             "width": width,
@@ -256,16 +271,29 @@ def build_graph(
         workflow["5"] = _n("5", "MiniMaxH3ImageToVideo", cond_inputs)
 
     workflow["6"] = _n("6", "MiniMaxH3SigmaShift", {
-        "model": [model_source, 0],
+        "model": model_source,
         "shift_video": shift_video,
         "shift_audio": shift_audio,
     })
+
+    # Optional VRAM chunking (KJNodes MiniMaxChunkFeedForward, the workflow's
+    # chunk toggle): fewer peak-VRAM tokens at a small speed cost.
+    sampled_model = ["6", 0]
+    if spec.get("chunk_ffn"):
+        chunks = int(spec.get("chunk_count", 4))
+        if not 1 <= chunks <= 64:
+            raise SpecError("chunk_count must be 1..64")
+        workflow["17"] = _n("17", "MiniMaxChunkFeedForward", {
+            "model": ["6", 0], "chunks": chunks, "seq_threshold": 4096,
+        })
+        sampled_model = ["17", 0]
+
     workflow["7"] = _n("7", "RandomNoise", {"noise_seed": seed})
     workflow["8"] = _n("8", "KSamplerSelect", {"sampler_name": sampler_name})
     workflow["9"] = _n("9", "BasicScheduler", {
-        "model": ["6", 0], "scheduler": scheduler, "steps": steps, "denoise": 1.0,
+        "model": sampled_model, "scheduler": scheduler, "steps": steps, "denoise": 1.0,
     })
-    workflow["10"] = _n("10", "BasicGuider", {"model": ["6", 0], "positive": ["5", 0]})
+    workflow["10"] = _n("10", "BasicGuider", {"model": sampled_model, "positive": ["5", 0]})
     workflow["11"] = _n("11", "SamplerCustomAdvanced", {
         "noise": ["7", 0], "guider": ["10", 0], "sampler": ["8", 0],
         "sigmas": ["9", 0], "latent": ["5", 1],
@@ -274,6 +302,20 @@ def build_graph(
     workflow["13"] = _n("13", "VAEDecodeAudio", {"samples": ["11", 0], "vae": ["4", 0]})
 
     images_source = ["12", 0]
+    fps_out = FPS
+    if spec.get("frame_interpolation"):
+        mult = int(spec.get("interpolation_multiplier", 2))
+        if not 2 <= mult <= 16:
+            raise SpecError("interpolation_multiplier must be 2..16")
+        workflow["32"] = _n("32", "FrameInterpolationModelLoader", {
+            "model_name": spec.get("interpolation_model", "rife_v4.26.safetensors"),
+        })
+        workflow["33"] = _n("33", "FrameInterpolate", {
+            "interp_model": ["32", 0], "images": images_source, "multiplier": mult,
+        })
+        images_source = ["33", 0]
+        fps_out = FPS * mult
+
     upscale_slug = spec.get("upscale_model")
     if upscale_slug:
         if upscale_slug not in paths:
@@ -285,7 +327,7 @@ def build_graph(
         images_source = ["31", 0]
 
     workflow["14"] = _n("14", "CreateVideo", {
-        "images": images_source, "fps": FPS, "audio": ["13", 0],
+        "images": images_source, "fps": fps_out, "audio": ["13", 0],
     })
     workflow["15"] = _n("15", "SaveVideo", {
         "video": ["14", 0],
@@ -303,7 +345,11 @@ def build_graph(
         "height": height,
         "frames": frames,
         "duration_seconds": round(frames / FPS, 2),
-        "fps": FPS,
+        "fps": fps_out,
+        "frame_interpolation": bool(spec.get("frame_interpolation")),
+        "interpolation_multiplier": int(spec.get("interpolation_multiplier", 2))
+        if spec.get("frame_interpolation") else None,
+        "chunk_ffn": bool(spec.get("chunk_ffn")),
         "steps": steps,
         "sampler_name": sampler_name,
         "scheduler": scheduler,

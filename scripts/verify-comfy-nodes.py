@@ -36,6 +36,17 @@ REQUIRED_NODES = [
     "LoraLoaderModelOnly",
     "UpscaleModelLoader",
     "ImageUpscaleWithModel",
+    # core RIFE frame interpolation
+    "FrameInterpolate",
+    "FrameInterpolationModelLoader",
+    # DaSiWa-Nodes pack
+    "DaSiWa_LTX2LoraLoader",
+    "MiniMaxH3Cache",
+    "DaSiWa_Watermark",
+    # KJNodes
+    "MiniMaxChunkFeedForward",
+    # MMH3-UltimateUpscale pack
+    "MMH3UltimateUpscale",
 ]
 
 COMFYUI_DIR = os.getenv("COMFYUI_DIR", "/comfyui")

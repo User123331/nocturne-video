@@ -62,9 +62,16 @@ class Service:
             "duration_seconds": float(payload.get("duration_seconds", 5)),
         }
         for key in ("width", "height", "seed", "steps", "shift_video", "shift_audio",
-                    "sampler_name", "scheduler", "ref_image_size", "upscale_model"):
+                    "sampler_name", "scheduler", "ref_image_size", "upscale_model",
+                    "frame_interpolation", "interpolation_multiplier", "chunk_ffn",
+                    "chunk_count"):
             if payload.get(key) not in (None, ""):
                 spec[key] = payload[key]
+        if payload.get("loras"):
+            spec["loras"] = [
+                {"name": str(l.get("name", "")).strip(), "strength": float(l.get("strength", 1.0))}
+                for l in payload["loras"] if str(l.get("name", "")).strip()
+            ][:10]
         if files.get("first_frame"):
             spec["first_frame_b64"] = files["first_frame"]
         if files.get("last_frame"):

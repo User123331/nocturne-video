@@ -86,6 +86,17 @@
           <input type="text" id="seed" class="input mono" placeholder="random" inputmode="numeric">
           <button class="icon-btn" id="btn-dice" title="Randomize seed">⚄</button>
         </span></label>
+        <div class="adv-toggles">
+          <label class="toggle"><input type="checkbox" id="frame-interp"> Frame interpolation ×2 <span class="mono dim">RIFE → 48fps</span></label>
+          <label class="toggle"><input type="checkbox" id="chunk-ffn"> Chunk feed-forward <span class="mono dim">lower VRAM</span></label>
+        </div>
+        <div class="lora-block">
+          <div class="lora-head">
+            <span class="field-label" style="margin:0">LoRA stack <span class="dim">· files in volume /loras</span></span>
+            <button type="button" class="ghost-btn" id="btn-add-lora">+ Add</button>
+          </div>
+          <div id="lora-rows"></div>
+        </div>
       </div>
     </details>
   </section>

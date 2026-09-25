@@ -6,8 +6,9 @@ FROM --platform=${TARGETPLATFORM} ${WORKER_COMFYUI_IMAGE}
 USER root
 
 # The base image pins its own ComfyUI checkout; MiniMax H3 support (native
-# nodes, "minimax" CLIPLoader type, nested AV latent decode) must exist, so
-# advance ComfyUI to a tag that is verified to ship nodes_minimax_h3.py.
+# nodes, "minimax" CLIPLoader type, nested AV latent decode, core RIFE
+# interpolation) must exist, so advance ComfyUI to a tag verified to ship
+# nodes_minimax_h3.py and nodes_frame_interpolation.py.
 ARG COMFYUI_TAG=v0.37.2
 RUN cd /comfyui \
     && git fetch --tags --force \
@@ -23,8 +24,30 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     ALLOW_MODEL_DOWNLOADS=0 \
     ALLOW_RAW_WORKFLOW=0
 
-# No custom node packs: the production graphs use ComfyUI core nodes only
-# (MiniMax H3 native nodes + standard loaders/samplers/SaveVideo).
+# Custom node packs, pinned. Mirrors the DaSiWa C-MMH3 requirements minus
+# rgthree (pure UI labels, never appear in API-format graphs):
+#   kjnodes          — MiniMaxChunkFeedForward (VRAM chunking)
+#   gguf             — GGUF quant loaders (future quant swaps)
+#   dasiwa-nodes     — Advanced LoRA stack (str/vs/as), MiniMaxH3Cache,
+#                      watermark, RTX refiner, torch resize
+#   mmh3-upscale     — MMH3UltimateUpscale latent 2x pipeline
+RUN comfy-node-install \
+    comfyui-kjnodes \
+    comfyui-gguf
+
+# The two packs the ComfyUI registry does not carry: clone at pinned commits.
+RUN git clone --depth 1 https://github.com/darksidewalker/ComfyUI-DaSiWa-Nodes.git /comfyui/custom_nodes/ComfyUI-DaSiWa-Nodes \
+    && cd /comfyui/custom_nodes/ComfyUI-DaSiWa-Nodes && git fetch --depth 1 origin a9ea632f8 && git checkout --detach a9ea632f8
+RUN git clone --depth 1 https://github.com/bbaudio-2025/Comfyui-MMH3-UltimateUpscale.git /comfyui/custom_nodes/Comfyui-MMH3-UltimateUpscale \
+    && cd /comfyui/custom_nodes/Comfyui-MMH3-UltimateUpscale && git fetch --depth 1 origin fe6658f6d && git checkout --detach fe6658f6d
+
+# comfy-node-install resolves requirements in its isolated build environment,
+# while the worker runs on /opt/venv — install the runtime imports there too
+# (KJNodes: color-matcher/matplotlib; GGUF: gguf; DaSiWa pack: stdlib + av).
+RUN uv pip install --python /opt/venv/bin/python \
+    "color-matcher==0.6.0" \
+    "matplotlib==3.11.2" \
+    "gguf==0.10.0"
 
 COPY scripts/verify-comfy-nodes.py /usr/local/bin/verify-comfy-nodes.py
 RUN chmod 0555 /usr/local/bin/verify-comfy-nodes.py \

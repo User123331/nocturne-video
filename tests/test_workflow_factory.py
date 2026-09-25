@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import unittest
 
 from worker import workflow_factory as wf
@@ -157,12 +158,55 @@ class GraphTests(unittest.TestCase):
                                    "retention_analysis": "r", "detailed_description": "d",
                                    "overall_soundscape": "o"}})
 
-    def test_lora_chain(self):
+    def test_lora_stack_via_dasiwa_loader(self):
         graph, _ = self.build({"loras": [{"name": "lora_a.safetensors", "strength": 0.8},
-                                          {"name": "lora_b.safetensors", "strength": 1.2}]})
-        self.assertEqual(graph["101"]["inputs"]["model"], ["1", 0])
-        self.assertEqual(graph["102"]["inputs"]["model"], ["101", 0])
-        self.assertEqual(graph["6"]["inputs"]["model"], ["102", 0])
+                                          {"name": "lora_b.safetensors", "strength": 1.2},
+                                          {"name": "", "strength": 1.0}]})
+        node = graph["16"]
+        self.assertEqual(node["class_type"], "DaSiWa_LTX2LoraLoader")
+        self.assertEqual(node["inputs"]["model"], ["1", 0])
+        self.assertEqual(node["inputs"]["clip"], ["2", 0])
+        self.assertEqual(node["inputs"]["model_type"], "Basic")
+        stack = json.loads(node["inputs"]["stack_data"])
+        self.assertEqual(len(stack), 2)  # blank row dropped
+        self.assertEqual(stack[0], {"on": True, "lora": "lora_a.safetensors",
+                                    "str": 0.8, "vs": 1, "as": 1})
+        self.assertEqual(graph["6"]["inputs"]["model"], ["16", 0])
+        self.assertEqual(graph["5"]["inputs"]["clip"], ["16", 1])
+
+    def test_no_loras_keeps_direct_wiring(self):
+        graph, _ = self.build()
+        self.assertNotIn("16", graph)
+        self.assertEqual(graph["6"]["inputs"]["model"], ["1", 0])
+        self.assertEqual(graph["5"]["inputs"]["clip"], ["2", 0])
+
+    def test_frame_interpolation_wiring(self):
+        graph, meta = self.build({"frame_interpolation": True})
+        self.assertEqual(graph["32"]["class_type"], "FrameInterpolationModelLoader")
+        self.assertEqual(graph["33"]["class_type"], "FrameInterpolate")
+        self.assertEqual(graph["33"]["inputs"]["interp_model"], ["32", 0])
+        self.assertEqual(graph["33"]["inputs"]["multiplier"], 2)
+        self.assertEqual(graph["14"]["inputs"]["images"], ["33", 0])
+        self.assertEqual(graph["14"]["inputs"]["fps"], 48)
+        self.assertEqual(meta["fps"], 48)
+
+    def test_no_interpolation_default(self):
+        graph, meta = self.build()
+        self.assertNotIn("33", graph)
+        self.assertEqual(graph["14"]["inputs"]["fps"], 24)
+        self.assertFalse(meta["frame_interpolation"])
+
+    def test_chunk_ffn_wiring(self):
+        graph, meta = self.build({"chunk_ffn": True})
+        self.assertEqual(graph["17"]["class_type"], "MiniMaxChunkFeedForward")
+        self.assertEqual(graph["17"]["inputs"]["chunks"], 4)
+        self.assertEqual(graph["9"]["inputs"]["model"], ["17", 0])
+        self.assertEqual(graph["10"]["inputs"]["model"], ["17", 0])
+        self.assertTrue(meta["chunk_ffn"])
+        graph2, meta2 = self.build()
+        self.assertNotIn("17", graph2)
+        self.assertEqual(graph2["9"]["inputs"]["model"], ["6", 0])
+        self.assertFalse(meta2["chunk_ffn"])
 
     def test_upscale_chain(self):
         paths = {**PATHS, "2x-animesharp": "upscale_models/2x_anime.safetensors"}

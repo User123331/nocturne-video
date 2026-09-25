@@ -155,6 +155,15 @@ body {
 .seed-label { grid-column: 1 / -1; }
 .seed-wrap { display: flex; gap: 6px; }
 .seed-wrap .input { flex: 1; }
+.adv-toggles { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 8px; margin-top: 2px; }
+.toggle { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--ink); cursor: pointer; }
+.toggle input { accent-color: var(--amber); }
+.lora-block { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 8px; }
+.lora-head { display: flex; justify-content: space-between; align-items: center; }
+.lora-row { display: flex; gap: 8px; align-items: center; }
+.lora-row .input { flex: 1; }
+.lora-row .input.strength { flex: 0 0 76px; }
+.icon-btn.remove { width: 30px; height: 30px; }
 .icon-btn {
   background: var(--panel-2); border: 1px solid var(--line); color: var(--dim);
   border-radius: 8px; width: 34px; cursor: pointer; font-size: 14px;
