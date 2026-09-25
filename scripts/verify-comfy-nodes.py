@@ -111,6 +111,10 @@ def build_all_graphs() -> dict:
                             "watermark": {"image": "gate.png"},
                             "chunk_ffn": True,
                             "prompt": {"integrated_multimodal_description": "gate check"}},
+        "custom_pace": {"task": "t2va", "quality": "custom", "fps": 12,
+                        "sampler_name": "dpmpp_2m", "scheduler": "karras",
+                        "steps": 12, "shift_video": 9.0, "shift_audio": 4.0,
+                        "prompt": {"integrated_multimodal_description": "gate check"}},
     }
     graphs = {}
     for name, spec in specs.items():

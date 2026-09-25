@@ -256,9 +256,11 @@ def build_graph(
     if task not in TASKS:
         raise SpecError(f"task must be one of {TASKS}")
     quality = spec.get("quality", "quality")
-    if quality not in PRESETS:
-        raise SpecError("quality must be 'quality' or 'turbo'")
-    preset = PRESETS[quality]
+    # "custom" means the caller sent explicit sampling values; the "quality"
+    # preset still supplies whatever was left unset.
+    preset = PRESETS.get(quality if quality in PRESETS else "quality")
+    if quality not in PRESETS and quality != "custom":
+        raise SpecError("quality must be 'quality', 'turbo', or 'custom'")
 
     checkpoint_slug = spec.get("checkpoint", "dasiwa-hybrid-v2-int8")
     if checkpoint_slug not in paths:

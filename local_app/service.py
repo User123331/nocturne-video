@@ -45,8 +45,11 @@ class Service:
         if task not in TASKS:
             raise ServiceError(f"task must be one of {TASKS}")
         quality = payload.get("quality", "quality")
-        if quality not in ("quality", "turbo"):
-            raise ServiceError("quality must be 'quality' or 'turbo'")
+        # "custom" is the dashboard's state when the sampling fields were
+        # hand-edited; the explicit values travel alongside it, and the worker
+        # treats the preset as a fallback for anything left unset.
+        if quality not in ("quality", "turbo", "custom"):
+            raise ServiceError("quality must be 'quality', 'turbo', or 'custom'")
 
         prompt = payload.get("prompt") or {}
         if not isinstance(prompt, dict):

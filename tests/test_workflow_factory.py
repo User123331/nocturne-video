@@ -317,6 +317,22 @@ class GraphTests(unittest.TestCase):
         with self.assertRaises(wf.SpecError):
             self.build({"fps": 2})
 
+    def test_custom_quality_uses_explicit_values(self):
+        # The dashboard sends quality="custom" with every field filled.
+        graph, meta = self.build({"quality": "custom", "sampler_name": "dpmpp_2m",
+                                  "scheduler": "karras", "steps": 12,
+                                  "shift_video": 9.0, "shift_audio": 4.0})
+        self.assertEqual(graph["8"]["inputs"]["sampler_name"], "dpmpp_2m")
+        self.assertEqual(graph["9"]["inputs"]["steps"], 12)
+        self.assertEqual(graph["6"]["inputs"]["shift_video"], 9.0)
+        self.assertEqual(meta["quality"], "custom")
+        # Unset fields fall back to the Final preset.
+        graph2, _ = self.build({"quality": "custom", "steps": 12})
+        self.assertEqual(graph2["8"]["inputs"]["sampler_name"], "res_multistep")
+        self.assertEqual(graph2["6"]["inputs"]["shift_audio"], 4.0)
+        with self.assertRaises(wf.SpecError):
+            self.build({"quality": "nonsense"})
+
     def test_unknown_checkpoint(self):
         with self.assertRaises(wf.SpecError):
             self.build({"checkpoint": "nope"})
