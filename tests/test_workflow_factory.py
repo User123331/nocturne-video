@@ -226,3 +226,50 @@ class GraphTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LoaderNameTests(unittest.TestCase):
+    """Loader names must be relative to models/<kind>/, not prefixed with it.
+
+    ComfyUI's loader nodes resolve within their own models/<kind>/ directory,
+    so passing "diffusion_models/MiniMaxH3/x.safetensors" to UNETLoader fails
+    with value_not_in_list before any node runs.
+    """
+
+    def test_graph_uses_folder_relative_loader_names(self):
+        import sys
+        sys.path.insert(0, ".")
+        # Rebuild the slug->loader-name mapping the handler produces.
+        from worker import asset_manager
+        from pathlib import Path
+        manifest = asset_manager.load_manifest(Path("config/assets.manifest.json"))
+        by_slug = {a["slug"]: a for a in manifest}
+        for slug in ("dasiwa-hybrid-v2-int8", "video-vae-fp16", "audio-vae-fp32",
+                     "qwen3vl-32b-nvfp4-awq", "taeh3-preview", "rife-v4.26"):
+            name = asset_manager.comfy_relative_name(by_slug[slug])
+            self.assertFalse(
+                name.startswith(by_slug[slug]["kind"] + "/"),
+                f"{slug}: loader name {name!r} must not repeat the kind prefix")
+        # The two VAE entries share a kind but differ by relative_dir.
+        self.assertEqual(
+            asset_manager.comfy_relative_name(by_slug["video-vae-fp16"]),
+            "MiniMaxH3/minimax_h3_video_vae_fp16.safetensors")
+        self.assertEqual(
+            asset_manager.comfy_relative_name(by_slug["taeh3-preview"]),
+            "taeh3.safetensors")
+
+    def test_graph_passes_relative_names_to_loaders(self):
+        import sys
+        sys.path.insert(0, ".")
+        from worker import asset_manager
+        from pathlib import Path
+        by_slug = {a["slug"]: a for a in asset_manager.load_manifest(Path("config/assets.manifest.json"))}
+        paths = {s: asset_manager.comfy_relative_name(a) for s, a in by_slug.items()}
+        graph, _ = wf.build_graph(spec(), paths=paths, gen_id="g1",
+                                  upload_dir="nocturne/g1")
+        self.assertEqual(graph["1"]["inputs"]["unet_name"],
+                         "MiniMaxH3/dasiwa_hybrid_v2_int8.safetensors")
+        self.assertEqual(graph["3"]["inputs"]["vae_name"],
+                         "MiniMaxH3/minimax_h3_video_vae_fp16.safetensors")
+        self.assertEqual(graph["2"]["inputs"]["clip_name"],
+                         "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors")

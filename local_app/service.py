@@ -147,6 +147,16 @@ class Service:
             self.db.update_job(job["id"], status="FAILED",
                                error=str(output.get("error") or "worker error"))
             return
+        # A healthcheck verifies the volume and produces no media by design:
+        # report what it verified instead of demanding a video from it.
+        if job.get("task") == "healthcheck" or output.get("mode") == "healthcheck":
+            verified = output.get("assets_verified") or []
+            failed = output.get("assets_failed") or []
+            summary = f"{len(verified)} assets verified"
+            if failed:
+                summary += f"; {len(failed)} failed"
+            self.db.update_job(job["id"], status="COMPLETED", error=summary)
+            return
         videos = output.get("videos") or []
         if not videos:
             self.db.update_job(job["id"], status="FAILED",

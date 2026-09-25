@@ -187,14 +187,22 @@ def _apply_staged_to_spec(spec: dict, staged: dict, upload_rel: str) -> None:
 
 
 def _paths_for_graph(paths_abs: dict[str, str]) -> dict[str, str]:
-    """Convert absolute volume paths to ComfyUI-relative loader names."""
+    """Map asset slugs to the loader names ComfyUI expects.
+
+    Each loader node (UNETLoader, VAELoader, CLIPLoader, ...) already resolves
+    within its own models/<kind>/ directory, so the value must be the path
+    *inside* that directory: "MiniMaxH3/foo.safetensors", not
+    "diffusion_models/MiniMaxH3/foo.safetensors". Prefixing the kind makes the
+    value fail the node's own filename list and the workflow is rejected with
+    "value_not_in_list" before anything runs.
+    """
     manifest = {a["slug"]: a for a in asset_manager.load_manifest()}
     out = {}
     for slug, _abs in paths_abs.items():
         asset = manifest.get(slug)
         if asset is None:
             continue
-        out[slug] = f"{asset['kind']}/{asset_manager.comfy_relative_name(asset)}"
+        out[slug] = asset_manager.comfy_relative_name(asset)
     return out
 
 
