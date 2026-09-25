@@ -36,6 +36,37 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual([j["id"] for j in active], ["j2"])
         self.assertEqual(len(self.db.list_jobs()), 2)
 
+    def test_failed_write_does_not_hold_the_lock(self):
+        """A statement that raises must not leave a transaction open.
+
+        With implicit transactions, a failed INSERT left the connection holding
+        SQLite's write lock for the life of the process, and every later write
+        failed with "database is locked" until the app restarted.
+        """
+        self.db.insert_job("j1", "rp1", "t2va", "quality", {"task": "t2va"}, "p")
+        with self.assertRaises(Exception):
+            self.db.insert_job("j1", "rp2", "t2va", "quality", {"task": "t2va"}, "dup key")
+        # The same connection must be usable, and a second one must be able to
+        # take the write lock.
+        self.db.update_job("j1", status="RUNNING")
+        other = database.Database(Path(self.tmp.name) / "test.sqlite3")
+        other.insert_job("j2", "rp3", "t2va", "quality", {"task": "t2va"}, "second")
+        self.assertEqual(other.get_job("j2")["status"], "QUEUED")
+
+    def test_tags_and_favorites(self):
+        self.db.insert_generation(gen_id="g1", task="t2va", prompt_text="p")
+        self.db.set_tags("g1", ["#b", "a", "a", "  "])
+        self.db.set_favorite("g1", True)
+        gen = self.db.get_generation("g1")
+        self.assertEqual(json.loads(gen["tags"]), ["a", "b"])
+        self.assertEqual(gen["favorited"], 1)
+        self.assertEqual(self.db.tag_counts(),
+                         [{"tag": "a", "count": 1}, {"tag": "b", "count": 1}])
+        self.assertEqual(len(self.db.search_generations(tag="a")), 1)
+        self.assertEqual(len(self.db.search_generations(tag="missing")), 0)
+        self.db.insert_generation(gen_id="g2", task="t2va", prompt_text="p2")
+        self.assertEqual(self.db.search_generations(sort="favorited")[0]["gen_id"], "g1")
+
     def test_generation_search(self):
         self.db.insert_generation(gen_id="g1", job_id="j1", task="t2va", quality="quality",
                                   checkpoint="dasiwa", prompt_text="a lighthouse in fog",

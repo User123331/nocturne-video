@@ -65,17 +65,18 @@ class Database:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._local = threading.local()
         conn = self._new_conn()
+        # isolation_level=None means DDL runs in autocommit, which is what we
+        # want here: the schema and every migration either lands or does not.
         conn.executescript(SCHEMA)
         for statement in MIGRATIONS:
             try:
                 conn.execute(statement)
             except sqlite3.OperationalError:
                 pass  # column already exists
-        conn.commit()
         conn.close()
 
     def _new_conn(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self.path), timeout=30)
+        conn = sqlite3.connect(str(self.path), timeout=30, isolation_level=None)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=30000")
@@ -92,16 +93,44 @@ class Database:
             self._local.conn = conn
         return conn
 
+    def _write(self, sql: str, args: tuple = ()) -> None:
+        """Run one statement in an explicit transaction.
+
+        Autocommit is off (isolation_level=None) so nothing is left open
+        implicitly: without this, a statement that raises after acquiring the
+        write lock leaves the transaction open on a connection that lives for
+        the whole process, and every later write fails with "database is
+        locked" until restart.
+        """
+        conn = self.conn
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute(sql, args)
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        conn.execute("COMMIT")
+
+    def _write_many(self, statements: list[tuple[str, tuple]]) -> None:
+        conn = self.conn
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            for sql, args in statements:
+                conn.execute(sql, args)
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        conn.execute("COMMIT")
+
     # -- jobs ---------------------------------------------------------------
 
     def insert_job(self, job_id: str, runpod_job_id: str, task: str, quality: str,
                    spec: dict, prompt_text: str) -> None:
         now = _now()
-        self.conn.execute(
+        self._write(
             "INSERT INTO jobs (id, runpod_job_id, status, task, quality, spec_json, prompt_text, created_at, updated_at) "
             "VALUES (?, ?, 'QUEUED', ?, ?, ?, ?, ?, ?)",
             (job_id, runpod_job_id, task, quality, json.dumps(spec), prompt_text, now, now))
-        self.conn.commit()
 
     def update_job(self, job_id: str, **fields) -> None:
         if not fields:
@@ -109,8 +138,7 @@ class Database:
         fields.setdefault("updated_at", _now())
         cols = ", ".join(f"{k} = ?" for k in fields)
         values = list(fields.values()) + [job_id]
-        self.conn.execute(f"UPDATE jobs SET {cols} WHERE id = ?", values)
-        self.conn.commit()
+        self._write(f"UPDATE jobs SET {cols} WHERE id = ?", tuple(values))
 
     def get_job(self, job_id: str) -> dict | None:
         row = self.conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
@@ -132,18 +160,16 @@ class Database:
         fields.setdefault("created_at", _now())
         cols = ", ".join(fields.keys())
         marks = ", ".join("?" for _ in fields)
-        self.conn.execute(f"INSERT INTO generations ({cols}) VALUES ({marks})",
-                          list(fields.values()))
-        self.conn.commit()
+        self._write(f"INSERT INTO generations ({cols}) VALUES ({marks})",
+                    tuple(fields.values()))
         return fields["gen_id"]
 
     def update_generation(self, gen_id: str, **fields) -> None:
         if not fields:
             return
         cols = ", ".join(f"{k} = ?" for k in fields)
-        self.conn.execute(f"UPDATE generations SET {cols} WHERE gen_id = ?",
-                          list(fields.values()) + [gen_id])
-        self.conn.commit()
+        self._write(f"UPDATE generations SET {cols} WHERE gen_id = ?",
+                    tuple(list(fields.values()) + [gen_id]))
 
     def get_generation(self, gen_id: str) -> dict | None:
         row = self.conn.execute("SELECT * FROM generations WHERE gen_id = ?", (gen_id,)).fetchone()
@@ -191,14 +217,12 @@ class Database:
 
     def set_tags(self, gen_id: str, tags: list[str]) -> None:
         clean = sorted({t.strip().lstrip("#") for t in tags if t.strip()})
-        self.conn.execute("UPDATE generations SET tags = ? WHERE gen_id = ?",
-                          (json.dumps(clean), gen_id))
-        self.conn.commit()
+        self._write("UPDATE generations SET tags = ? WHERE gen_id = ?",
+                    (json.dumps(clean), gen_id))
 
     def set_favorite(self, gen_id: str, favorited: bool) -> None:
-        self.conn.execute("UPDATE generations SET favorited = ? WHERE gen_id = ?",
-                          (1 if favorited else 0, gen_id))
-        self.conn.commit()
+        self._write("UPDATE generations SET favorited = ? WHERE gen_id = ?",
+                    (1 if favorited else 0, gen_id))
 
     def generations_missing_files(self) -> list[dict]:
         rows = self.conn.execute(
