@@ -20,8 +20,15 @@ import time
 import uuid
 from pathlib import Path
 
-APP_ROOT = Path(os.getenv("APP_ROOT", "/opt/serverless-image"))
-sys.path.insert(0, str(APP_ROOT / "worker"))
+APP_ROOT = Path(os.getenv("APP_ROOT", "/opt/nocturne-video"))
+# Resolve sibling modules from this file's own directory first: the worker dir
+# is authoritative for asset_manager/workflow_factory, and this keeps imports
+# working even if APP_ROOT or the working directory is unexpected.
+_HERE = Path(__file__).resolve().parent
+for _candidate in (_HERE, APP_ROOT / "worker"):
+    if (_candidate / "asset_manager.py").is_file():
+        sys.path.insert(0, str(_candidate))
+        break
 sys.path.insert(0, "/")
 
 import handler_upstream  # type: ignore  # provided by the base image

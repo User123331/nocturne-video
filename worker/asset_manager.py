@@ -23,7 +23,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-APP_ROOT = Path(os.getenv("APP_ROOT", "/opt/serverless-image"))
+APP_ROOT = Path(os.getenv("APP_ROOT", "/opt/nocturne-video"))
 VOLUME_ROOT = Path(os.getenv("VOLUME_ROOT", "/runpod-volume"))
 COMFYUI_MODELS = Path(os.getenv("COMFYUI_MODELS_DIR", "/comfyui/models"))
 MANIFEST_PATH = Path(os.getenv("ASSET_MANIFEST", APP_ROOT / "config" / "assets.manifest.json"))
