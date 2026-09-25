@@ -43,10 +43,15 @@ REQUIRED_NODES = [
     "DaSiWa_LTX2LoraLoader",
     "MiniMaxH3Cache",
     "DaSiWa_Watermark",
+    "DaSiWa_TorchResize",
+    "DaSiWa_RTX_UpscalerRefiner",
     # KJNodes
     "MiniMaxChunkFeedForward",
     # MMH3-UltimateUpscale pack
     "MMH3UltimateUpscale",
+    "MMH3LatentUpscaleWithModelParams",
+    "MMH3TemporalSplitParams",
+    "MMH3SpatialSplitParams",
 ]
 
 COMFYUI_DIR = os.getenv("COMFYUI_DIR", "/comfyui")
@@ -92,6 +97,20 @@ def build_all_graphs() -> dict:
                               "overall_soundscape": "o"}},
         "interpolated": {"task": "t2va", "frame_interpolation": True,
                          "prompt": {"integrated_multimodal_description": "gate check"}},
+        "upscale_model": {"task": "t2va",
+                          "upscale": {"mode": "model", "model": "2x-animesharpv4-rcan"},
+                          "prompt": {"integrated_multimodal_description": "gate check"}},
+        "upscale_simple": {"task": "t2va",
+                           "upscale": {"mode": "simple", "multiplier": 2},
+                           "prompt": {"integrated_multimodal_description": "gate check"}},
+        "upscale_rtx": {"task": "t2va", "upscale": {"mode": "rtx", "scale": 2},
+                        "prompt": {"integrated_multimodal_description": "gate check"}},
+        "upscale_h3_latent": {"task": "t2va", "upscale": {"mode": "h3_latent"},
+                              "prompt": {"integrated_multimodal_description": "gate check"}},
+        "cache_watermark": {"task": "t2va", "cache": {"reuse_threshold": 0.05},
+                            "watermark": {"image": "gate.png"},
+                            "chunk_ffn": True,
+                            "prompt": {"integrated_multimodal_description": "gate check"}},
     }
     graphs = {}
     for name, spec in specs.items():
@@ -113,7 +132,8 @@ def a_manager_comfy_relative(asset):
 
 
 def validate_graph_inputs(graphs: dict, object_info: dict) -> list:
-    """Every input name a graph sets must exist in the node's schema."""
+    """Every input name a graph sets must exist in the node's schema; string
+    values must be members of their combo list where one exists."""
     problems = []
     for gname, graph in graphs.items():
         for nid, node in graph.items():
@@ -124,11 +144,19 @@ def validate_graph_inputs(graphs: dict, object_info: dict) -> list:
                 continue
             inp = schema.get("input", {})
             valid = set((inp.get("required") or {}).keys()) | set((inp.get("optional") or {}).keys())
-            for iname in node["inputs"]:
+            for iname, ivalue in node["inputs"].items():
                 if iname not in valid:
                     problems.append(
                         f"{gname}/{nid} ({ct}): input {iname!r} not in node schema "
                         f"(valid: {sorted(valid)})")
+                    continue
+                spec_in = (inp.get("required") or {}).get(iname) or (inp.get("optional") or {}).get(iname)
+                if (isinstance(spec_in, (list, tuple)) and spec_in
+                        and isinstance(spec_in[0], (list, tuple))
+                        and isinstance(ivalue, str) and ivalue not in spec_in[0]):
+                    problems.append(
+                        f"{gname}/{nid} ({ct}): {iname}={ivalue!r} not in combo "
+                        f"{spec_in[0][:12]}")
     return problems
 
 

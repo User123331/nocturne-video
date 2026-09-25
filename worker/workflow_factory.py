@@ -27,6 +27,8 @@ MAX_WIDTH = 2560
 MAX_HEIGHT = 1440
 MIN_FRAMES = 5
 MAX_FRAMES = 362  # ~15s, the trained range per the native node tooltip
+MIN_FPS = 4
+MAX_FPS = 48
 
 TASKS = ("t2va", "i2va", "flf2va", "ref2va")
 
@@ -59,25 +61,35 @@ def align_frame_count(n: int) -> int:
     return n
 
 
-def frames_for_duration(duration_seconds: float) -> int:
+def frames_for_duration(duration_seconds: float, fps: int = FPS) -> int:
     if not 1.0 <= duration_seconds <= 15.0:
         raise SpecError("duration_seconds must be between 1 and 15")
-    return align_frame_count(max(MIN_FRAMES, round(duration_seconds * FPS)))
+    if not MIN_FPS <= int(fps) <= MAX_FPS:
+        raise SpecError(f"fps must be {MIN_FPS}..{MAX_FPS}")
+    return align_frame_count(max(MIN_FRAMES, round(duration_seconds * int(fps))))
 
 
 def clamp_canvas(width: int, height: int) -> tuple[int, int]:
-    def _snap(v: int) -> int:
+    def _snap(v: float) -> int:
         return max(CANVAS_MULTIPLE, round(v / CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
 
     width, height = _snap(int(width)), _snap(int(height))
-    if width * height > MAX_PIXELS:
-        # The trained canvas tops out around 768x1344; allow explicit larger
-        # canvases (the node accepts them) but cap hard at ~2K area.
-        cap = 2560 * 1440
-        if width * height > cap:
-            s = math.sqrt(cap / (width * height))
-            width, height = int(width * s), int(height * s)
-    return min(width, MAX_WIDTH), min(height, MAX_HEIGHT)
+    ratio = width / height
+    # Over the cap, pin the constrained axis and derive the other from the
+    # requested ratio, so the frame keeps its shape instead of distorting.
+    if width > MAX_WIDTH:
+        width, height = MAX_WIDTH, _snap(MAX_WIDTH / ratio)
+    if height > MAX_HEIGHT:
+        height, width = MAX_HEIGHT, _snap(MAX_HEIGHT * ratio)
+    cap_area = MAX_WIDTH * MAX_HEIGHT
+    if width * height > cap_area:
+        if ratio >= 1:
+            width = _snap(math.sqrt(cap_area * ratio))
+            height = _snap(width / ratio)
+        else:
+            height = _snap(math.sqrt(cap_area / ratio))
+            width = _snap(height * ratio)
+    return width, height
 
 
 def _section(key: str, value: str) -> str:
@@ -135,6 +147,98 @@ def _n(node_id: str, class_type: str, inputs: dict[str, Any]) -> dict[str, Any]:
     return {"class_type": class_type, "inputs": inputs}
 
 
+# DaSiWa C-MMH3 output-pipeline defaults (Settings note + workflow widgets).
+RTX_QUALITY_LEVELS = ("Off", "Low", "Medium", "High", "Super", "Ultra")
+SIMPLE_INTERPOLATIONS = ("Nearest", "Bilinear", "Bicubic", "Area", "Lanczos")
+H3_LATENT_UPSCALER_DEFAULT = "latent-upscaler-3d"
+
+
+def _normalize_upscale(spec: dict[str, Any], paths: dict[str, str],
+                       width: int, height: int) -> dict[str, Any] | None:
+    """Validate the four DaSiWa output-pipeline upscale modes into one dict."""
+    raw = spec.get("upscale")
+    if raw is None and spec.get("upscale_model"):
+        raw = {"mode": "model", "model": spec.get("upscale_model")}
+    if not raw:
+        return None
+    if not isinstance(raw, dict):
+        raise SpecError("upscale must be an object")
+    mode = raw.get("mode")
+    if mode == "model":
+        slug = raw.get("model", "")
+        if slug not in paths:
+            raise SpecError(f"unknown upscale model slug {slug!r}")
+        return {"mode": "model", "model": slug}
+    if mode == "simple":
+        out = {
+            "mode": "simple",
+            "multiplier": float(raw.get("multiplier", 2.0)),
+            "interpolation": raw.get("interpolation", "Lanczos"),
+            "divisible_by": int(raw.get("divisible_by", 16)),
+        }
+        if not 0.01 <= out["multiplier"] <= 16.0:
+            raise SpecError("simple upscale multiplier must be 0.01..16")
+        if out["interpolation"] not in SIMPLE_INTERPOLATIONS:
+            raise SpecError(f"simple interpolation must be one of {SIMPLE_INTERPOLATIONS}")
+        if not 1 <= out["divisible_by"] <= 512:
+            raise SpecError("simple divisible_by must be 1..512")
+        return out
+    if mode == "rtx":
+        out = {
+            "mode": "rtx",
+            "scale": float(raw.get("scale", 2.0)),
+            "upscale_quality": raw.get("upscale_quality", "Ultra"),
+            "denoise": bool(raw.get("denoise", False)),
+            "denoise_quality": raw.get("denoise_quality", "Ultra"),
+            "deblur": bool(raw.get("deblur", False)),
+            "deblur_quality": raw.get("deblur_quality", "Ultra"),
+            "divisible_by": str(raw.get("divisible_by", "8")),
+        }
+        if not 1.0 <= out["scale"] <= 4.0:
+            raise SpecError("rtx scale must be 1.0..4.0")
+        for key in ("upscale_quality", "denoise_quality", "deblur_quality"):
+            if out[key] not in RTX_QUALITY_LEVELS:
+                raise SpecError(f"rtx {key} must be one of {RTX_QUALITY_LEVELS}")
+        return out
+    if mode == "h3_latent":
+        # The 3D latent upscaler re-samples the AV latent: target pixel size
+        # snaps to the VAE's 16x grid. Default target is a straight 2x.
+        target_w = int(raw.get("target_width", width * 2))
+        target_h = int(raw.get("target_height", height * 2))
+        precision = raw.get("precision", "fp16")
+        if precision not in ("fp16", "fp32", "bf16"):
+            raise SpecError("h3_latent precision must be fp16, fp32, or bf16")
+        return {
+            "mode": "h3_latent",
+            "model": raw.get("model", H3_LATENT_UPSCALER_DEFAULT),
+            "target_width": (target_w // 16) * 16,
+            "target_height": (target_h // 16) * 16,
+            "precision": precision,
+        }
+    raise SpecError("upscale mode must be one of: off, model, simple, rtx, h3_latent")
+
+
+def _check_cache(spec: dict[str, Any]) -> dict[str, Any] | None:
+    cache = spec.get("cache")
+    if not cache:
+        return None
+    if not isinstance(cache, dict):
+        raise SpecError("cache must be an object")
+    out = {
+        "reuse_threshold": float(cache.get("reuse_threshold", 0.05)),
+        "start_percent": float(cache.get("start_percent", 0.15)),
+        "end_percent": float(cache.get("end_percent", 0.90)),
+        "max_steps": int(cache.get("max_steps", 2)),
+    }
+    if not 0.0 <= out["reuse_threshold"] <= 1.0:
+        raise SpecError("cache reuse_threshold must be 0..1")
+    if not 0.0 <= out["start_percent"] <= out["end_percent"] <= 1.0:
+        raise SpecError("cache start_percent must not exceed end_percent")
+    if not 1 <= out["max_steps"] <= 10:
+        raise SpecError("cache max_steps must be 1..10")
+    return out
+
+
 def build_graph(
     spec: dict[str, Any],
     *,
@@ -161,11 +265,12 @@ def build_graph(
         raise SpecError(f"unknown checkpoint slug {checkpoint_slug!r}")
 
     duration = float(spec.get("duration_seconds", 5))
-    frames = frames_for_duration(duration)
+    fps = int(spec.get("fps", FPS))
+    frames = frames_for_duration(duration, fps)
     width, height = clamp_canvas(spec.get("width", DEFAULT_WIDTH), spec.get("height", DEFAULT_HEIGHT))
 
     prompt = spec.get("prompt") or {}
-    final_prompt = assemble_prompt(task, prompt, frames / FPS)
+    final_prompt = assemble_prompt(task, prompt, frames / fps)
 
     steps = int(spec.get("steps", preset["steps"]))
     if not 1 <= steps <= 60:
@@ -185,6 +290,20 @@ def build_graph(
     te_slug = spec.get("text_encoder", "qwen3vl-32b-nvfp4-awq")
     if te_slug not in paths:
         raise SpecError(f"unknown text_encoder slug {te_slug!r}")
+
+    upscale = _normalize_upscale(spec, paths, width, height)
+    cache = _check_cache(spec)
+    watermark = spec.get("watermark") or None
+    if watermark:
+        if not isinstance(watermark, dict) or not (watermark.get("image") or "").strip():
+            raise SpecError("watermark needs an uploaded image")
+        if watermark.get("position", "bottom-right") not in (
+                "bottom-right", "bottom-left", "top-right", "top-left", "center"):
+            raise SpecError("watermark position is invalid")
+        if not 0.01 <= float(watermark.get("scale", 0.12)) <= 1.0:
+            raise SpecError("watermark scale must be 0.01..1.0")
+        if not 0.0 <= float(watermark.get("transparency", 0.35)) <= 1.0:
+            raise SpecError("watermark opacity must be 0..1")
 
     workflow: dict[str, Any] = {}
 
@@ -276,15 +395,26 @@ def build_graph(
         "shift_audio": shift_audio,
     })
 
-    # Optional VRAM chunking (KJNodes MiniMaxChunkFeedForward, the workflow's
-    # chunk toggle): fewer peak-VRAM tokens at a small speed cost.
+    # Model chain mirrors DaSiWa's Settings subgraph order: LoRA -> sigma
+    # shift -> block cache -> chunked feed-forward.
     sampled_model = ["6", 0]
+    if cache:
+        workflow["18"] = _n("18", "MiniMaxH3Cache", {
+            "model": sampled_model,
+            "reuse_threshold": cache["reuse_threshold"],
+            "start_percent": cache["start_percent"],
+            "end_percent": cache["end_percent"],
+            "max_steps": cache["max_steps"],
+            "device": "auto",
+            "verbose": False,
+        })
+        sampled_model = ["18", 0]
     if spec.get("chunk_ffn"):
         chunks = int(spec.get("chunk_count", 4))
         if not 1 <= chunks <= 64:
             raise SpecError("chunk_count must be 1..64")
         workflow["17"] = _n("17", "MiniMaxChunkFeedForward", {
-            "model": ["6", 0], "chunks": chunks, "seq_threshold": 4096,
+            "model": sampled_model, "chunks": chunks, "seq_threshold": 4096,
         })
         sampled_model = ["17", 0]
 
@@ -298,11 +428,52 @@ def build_graph(
         "noise": ["7", 0], "guider": ["10", 0], "sampler": ["8", 0],
         "sigmas": ["9", 0], "latent_image": ["5", 1],
     })
-    workflow["12"] = _n("12", "VAEDecode", {"samples": ["11", 0], "vae": ["3", 0]})
-    workflow["13"] = _n("13", "VAEDecodeAudio", {"samples": ["11", 0], "vae": ["4", 0]})
+
+    # H3-latent upscale re-samples the denoised AV latent through the 3D latent
+    # upscaler (MMH3UltimateUpscale), so both decode branches read its output.
+    latent_source = ["11", 0]
+    if upscale and upscale["mode"] == "h3_latent":
+        workflow["40"] = _n("40", "MMH3LatentUpscaleWithModelParams", {
+            "model_name": paths[upscale["model"]],
+            "width": upscale["target_width"],
+            "height": upscale["target_height"],
+            "device": "cuda",
+            "precision": upscale["precision"],
+            "offload_model": True,
+        })
+        workflow["41"] = _n("41", "MMH3TemporalSplitParams", {
+            "chunk_length": 85, "temporal_overlap": 17, "anchor_strength": 0.999,
+        })
+        # DaSiWa's spatial defaults: equal 2x3 tile grid over the upscaled
+        # frame, 128px overlaps, 64px fades, later-side overlap wins.
+        workflow["42"] = _n("42", "MMH3SpatialSplitParams", {
+            "upscale_width": upscale["target_width"],
+            "upscale_height": upscale["target_height"],
+            "tile_size_mode": "rows_cols",
+            "tile_width": 512, "tile_height": 512,
+            "grid_rows": 2, "grid_cols": 3,
+            "spatial_w_overlap": 128, "spatial_h_overlap": 128,
+            "fade_width": 64, "fade_height": 64,
+            "min_tile_size": 256,
+            "overlap_mode": "later", "overlap_blend": "linear",
+            "masked_area_noise": 0.05, "brightness_match": True,
+            "dynamic_fade": "widening", "dynamic_fade_min": 32,
+        })
+        workflow["43"] = _n("43", "MMH3UltimateUpscale", {
+            "model": sampled_model, "conditioning": ["5", 0], "latent": ["11", 0],
+            "noise": ["7", 0], "sampler": ["8", 0], "sigmas": ["9", 0],
+            "cfg": 1.0,
+            "latent_upscale_param": ["40", 0],
+            "temporal_split_param": ["41", 0],
+            "spatial_split_param": ["42", 0],
+        })
+        latent_source = ["43", 0]
+
+    workflow["12"] = _n("12", "VAEDecode", {"samples": latent_source, "vae": ["3", 0]})
+    workflow["13"] = _n("13", "VAEDecodeAudio", {"samples": latent_source, "vae": ["4", 0]})
 
     images_source = ["12", 0]
-    fps_out = FPS
+    fps_out = fps
     if spec.get("frame_interpolation"):
         mult = int(spec.get("interpolation_multiplier", 2))
         if not 2 <= mult <= 16:
@@ -314,17 +485,78 @@ def build_graph(
             "interp_model": ["32", 0], "images": images_source, "multiplier": mult,
         })
         images_source = ["33", 0]
-        fps_out = FPS * mult
+        fps_out = fps * mult
 
-    upscale_slug = spec.get("upscale_model")
-    if upscale_slug:
-        if upscale_slug not in paths:
-            raise SpecError(f"unknown upscale_model slug {upscale_slug!r}")
-        workflow["30"] = _n("30", "UpscaleModelLoader", {"model_name": paths[upscale_slug]})
+    if upscale and upscale["mode"] == "model":
+        workflow["30"] = _n("30", "UpscaleModelLoader", {
+            "model_name": paths[upscale["model"]],
+        })
         workflow["31"] = _n("31", "ImageUpscaleWithModel", {
             "upscale_model": ["30", 0], "image": images_source,
         })
         images_source = ["31", 0]
+    elif upscale and upscale["mode"] == "simple":
+        workflow["34"] = _n("34", "DaSiWa_TorchResize", {
+            "image": images_source,
+            "size_mode": "Multiplier",
+            "aspect_mode": "Fit",
+            "target_width": 1920, "target_height": 1080,
+            "scale_multiplier": upscale["multiplier"],
+            "interpolation": upscale["interpolation"],
+            "gamma_correct": True,
+            "divisible_by": upscale["divisible_by"],
+            "pad_color": "0, 0, 0",
+            "crop_position": "center",
+            "batch_size": 0,
+            "max_batch_megapixels": 16.0,
+            "cache_size": 64,
+        })
+        images_source = ["34", 0]
+    elif upscale and upscale["mode"] == "rtx":
+        workflow["35"] = _n("35", "DaSiWa_RTX_UpscalerRefiner", {
+            "images": images_source,
+            "denoise": upscale["denoise"],
+            "denoise_quality": upscale["denoise_quality"],
+            "deblur": upscale["deblur"],
+            "deblur_quality": upscale["deblur_quality"],
+            "upscale": "VSR" if upscale["scale"] > 1.0 else "Off",
+            "upscale_quality": upscale["upscale_quality"],
+            "resize_type": "Scale",
+            "scale": upscale["scale"],
+            "megapixels": 2.0,
+            "width": 1920, "height": 1080,
+            "divisible_by": upscale["divisible_by"],
+            "ratio_preset": "16:9",
+            "resize_method": "Center Crop (Fill)",
+            "device_id": 0,
+            "empty_cache": False,
+            "use_mmap": False,
+            "auto_unload_models": True,
+        })
+        images_source = ["35", 0]
+
+    if watermark:
+        # watermark_path is a filename combo relative to ComfyUI's input dir;
+        # the handler stages the uploaded PNG under the job's upload folder.
+        workflow["37"] = _n("37", "DaSiWa_Watermark", {
+            "images": images_source,
+            "watermark_path": f"{upload_dir}/{watermark['image']}",
+            "position": watermark.get("position", "bottom-right"),
+            "scale": float(watermark.get("scale", 0.12)),
+            "resampling": "bicubic",
+            "transparency": float(watermark.get("transparency", 0.35)),
+            "rotation": 0,
+            "padding_x": int(watermark.get("padding_x", 20)),
+            "padding_y": int(watermark.get("padding_y", 20)),
+            "optical_padding": False,
+            "optical_strength": 0.4,
+            "random_switches": 3,
+            "fade": False,
+            "fade_margin": 0.1,
+            "randomize_position": False,
+            "random_seed": 0,
+        })
+        images_source = ["37", 0]
 
     workflow["14"] = _n("14", "CreateVideo", {
         "images": images_source, "fps": fps_out, "audio": ["13", 0],
@@ -344,7 +576,8 @@ def build_graph(
         "width": width,
         "height": height,
         "frames": frames,
-        "duration_seconds": round(frames / FPS, 2),
+        "generation_fps": fps,
+        "duration_seconds": round(frames / fps, 2),
         "fps": fps_out,
         "frame_interpolation": bool(spec.get("frame_interpolation")),
         "interpolation_multiplier": int(spec.get("interpolation_multiplier", 2))
@@ -357,7 +590,9 @@ def build_graph(
         "shift_audio": shift_audio,
         "seed": seed,
         "prompt_final": final_prompt,
-        "upscale_model": upscale_slug,
+        "upscale": upscale,
+        "cache": cache,
+        "watermark": bool(watermark),
         "loras": spec.get("loras") or [],
     }
     return workflow, meta

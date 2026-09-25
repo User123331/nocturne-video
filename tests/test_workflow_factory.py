@@ -85,9 +85,9 @@ class PromptTests(unittest.TestCase):
 
 
 class GraphTests(unittest.TestCase):
-    def build(self, overrides=None):
-        return wf.build_graph(spec(**(overrides or {})), paths=PATHS, gen_id="g1",
-                              upload_dir="nocturne/g1")
+    def build(self, overrides=None, paths=None):
+        return wf.build_graph(spec(**(overrides or {})), paths=paths or PATHS,
+                              gen_id="g1", upload_dir="nocturne/g1")
 
     def test_t2va_graph_shape(self):
         graph, meta = self.build()
@@ -214,6 +214,93 @@ class GraphTests(unittest.TestCase):
                                   gen_id="g1", upload_dir="nocturne/g1")
         self.assertEqual(graph["14"]["inputs"]["images"], ["31", 0])
         self.assertEqual(graph["31"]["class_type"], "ImageUpscaleWithModel")
+
+    def test_upscale_modes(self):
+        cases = [
+            ({"mode": "model", "model": "2x-animesharp"}, ["30", "31"]),
+            ({"mode": "simple", "multiplier": 2, "interpolation": "Lanczos"}, ["34"]),
+            ({"mode": "rtx", "scale": 2}, ["35"]),
+            ({"mode": "h3_latent"}, ["40", "41", "42", "43"]),
+        ]
+        for upscale, node_ids in cases:
+            paths = {**PATHS, "2x-animesharp": "upscale_models/2x_anime.safetensors",
+                     "latent-upscaler-3d": "latent_upscaler.safetensors"}
+            graph, meta = self.build({"upscale": upscale}, paths=paths)
+            for nid in node_ids:
+                self.assertIn(nid, graph, f"{upscale['mode']}: missing node {nid}")
+            self.assertEqual(meta["upscale"]["mode"], upscale["mode"])
+        # Simple mode passes the user's multiplier and interpolation through.
+        paths = {**PATHS}
+        graph, _ = self.build(
+            {"upscale": {"mode": "simple", "multiplier": 3, "interpolation": "Bicubic"}},
+            paths=paths)
+        node = graph["34"]["inputs"]
+        self.assertEqual(node["scale_multiplier"], 3)
+        self.assertEqual(node["interpolation"], "Bicubic")
+
+    def test_h3_latent_upscale_reroutes_decodes(self):
+        paths = {**PATHS, "latent-upscaler-3d": "latent_upscaler.safetensors"}
+        graph, _ = self.build({"upscale": {"mode": "h3_latent"}}, paths=paths)
+        # Both the video and audio decode read the re-sampled latent.
+        self.assertEqual(graph["12"]["inputs"]["samples"], ["43", 0])
+        self.assertEqual(graph["13"]["inputs"]["samples"], ["43", 0])
+        ultimate = graph["43"]["inputs"]
+        self.assertEqual(ultimate["latent"], ["11", 0])
+        self.assertEqual(ultimate["conditioning"], ["5", 0])
+        self.assertEqual(ultimate["noise"], ["7", 0])
+        # Target is a straight 2x of the canvas, snapped to the VAE's 16x grid.
+        params = graph["40"]["inputs"]
+        self.assertEqual(params["width"], 2048)
+        self.assertEqual(params["height"], 1536)
+        self.assertEqual(params["precision"], "fp16")
+
+    def test_cache_node_chains_after_sigma_shift(self):
+        graph, meta = self.build({"cache": {"reuse_threshold": 0.1, "max_steps": 3}})
+        self.assertEqual(graph["18"]["class_type"], "MiniMaxH3Cache")
+        self.assertEqual(graph["18"]["inputs"]["reuse_threshold"], 0.1)
+        self.assertEqual(graph["18"]["inputs"]["max_steps"], 3)
+        self.assertEqual(graph["9"]["inputs"]["model"], ["18", 0])
+        self.assertTrue(meta["cache"])
+        graph2, _ = self.build()
+        self.assertNotIn("18", graph2)
+
+    def test_watermark_node_uses_staged_filename(self):
+        graph, meta = self.build({"watermark": {"image": "watermark.png", "scale": 0.2}})
+        self.assertEqual(graph["37"]["class_type"], "DaSiWa_Watermark")
+        self.assertEqual(graph["37"]["inputs"]["watermark_path"], "nocturne/g1/watermark.png")
+        self.assertEqual(graph["37"]["inputs"]["scale"], 0.2)
+        self.assertEqual(graph["14"]["inputs"]["images"], ["37", 0])
+        self.assertTrue(meta["watermark"])
+
+    def test_upscale_rejections(self):
+        for bad in ({"mode": "nope"}, {"mode": "model", "model": "missing"},
+                    {"mode": "simple", "multiplier": 99},
+                    {"mode": "rtx", "scale": 8},
+                    {"mode": "h3_latent", "precision": "int8"}):
+            with self.assertRaises(wf.SpecError, msg=str(bad)):
+                self.build({"upscale": bad})
+
+    def test_cache_rejections(self):
+        with self.assertRaises(wf.SpecError):
+            self.build({"cache": {"start_percent": 0.9, "end_percent": 0.1}})
+        with self.assertRaises(wf.SpecError):
+            self.build({"cache": {"max_steps": 99}})
+
+    def test_custom_fps(self):
+        # 5s at 8fps = 40 frames, snapped up to the 17k+5 grid; the combine
+        # plays back at the chosen rate and the flf2va alignment line uses it.
+        graph, meta = self.build({"fps": 8, "duration_seconds": 5})
+        self.assertEqual(graph["5"]["inputs"]["length"], 56)  # 17*3+5
+        self.assertEqual(graph["14"]["inputs"]["fps"], 8)
+        self.assertEqual(meta["generation_fps"], 8)
+        self.assertEqual(meta["duration_seconds"], 7.0)  # 56 frames / 8 fps
+        # Interpolation doubles the output rate, not the generation rate.
+        graph2, meta2 = self.build({"fps": 8, "duration_seconds": 5,
+                                    "frame_interpolation": True})
+        self.assertEqual(graph2["14"]["inputs"]["fps"], 16)
+        self.assertEqual(meta2["fps"], 16)
+        with self.assertRaises(wf.SpecError):
+            self.build({"fps": 2})
 
     def test_unknown_checkpoint(self):
         with self.assertRaises(wf.SpecError):

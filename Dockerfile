@@ -63,10 +63,16 @@ RUN git init -q /comfyui/custom_nodes/Comfyui-MMH3-UltimateUpscale \
 # comfy-node-install resolves requirements in its isolated build environment,
 # while the worker runs on /opt/venv — install the runtime imports there too
 # (KJNodes: color-matcher/matplotlib; GGUF: gguf; DaSiWa pack: stdlib + av).
+# nvidia-vfx enables the RTX Upscaler & Refiner; its wheels live on NVIDIA's
+# index, and DaSiWa imports the module lazily, so a failed install must not
+# fail the whole build: RTX jobs then report the missing SDK at runtime.
 RUN uv pip install --python /opt/venv/bin/python \
     "color-matcher==0.6.0" \
     "matplotlib==3.11.2" \
     "gguf==0.10.0"
+RUN uv pip install --python /opt/venv/bin/python \
+        --extra-index-url https://pypi.nvidia.com/ "nvidia-vfx" \
+    || echo "WARNING: nvidia-vfx unavailable in this build; RTX upscale mode will refuse jobs with a clear error"
 
 ARG VERIFY_TIMEOUT=300
 # The gate imports workflow_factory and reads the manifest, so worker/ and

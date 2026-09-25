@@ -48,6 +48,12 @@ CREATE INDEX IF NOT EXISTS idx_gen_created ON generations(created_at);
 CREATE INDEX IF NOT EXISTS idx_gen_task ON generations(task);
 """
 
+# Columns added after v1; existing databases get them via ALTER TABLE.
+MIGRATIONS = [
+    "ALTER TABLE generations ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'",
+    "ALTER TABLE generations ADD COLUMN favorited INTEGER NOT NULL DEFAULT 0",
+]
+
 
 def _now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -60,6 +66,11 @@ class Database:
         self._local = threading.local()
         conn = self._new_conn()
         conn.executescript(SCHEMA)
+        for statement in MIGRATIONS:
+            try:
+                conn.execute(statement)
+            except sqlite3.OperationalError:
+                pass  # column already exists
         conn.commit()
         conn.close()
 
@@ -138,20 +149,56 @@ class Database:
         row = self.conn.execute("SELECT * FROM generations WHERE gen_id = ?", (gen_id,)).fetchone()
         return dict(row) if row else None
 
-    def search_generations(self, q: str = "", task: str = "", limit: int = 60,
+    def search_generations(self, q: str = "", task: str = "", tag: str = "",
+                           sort: str = "newest", limit: int = 60,
                            offset: int = 0) -> list[dict]:
         where, args = [], []
         if q:
-            where.append("(prompt_text LIKE ? OR gen_id LIKE ?)")
-            args += [f"%{q}%", f"%{q}%"]
+            # Search prompts, ids, seeds, and the tag list (tags stored as JSON).
+            where.append("(prompt_text LIKE ? OR gen_id LIKE ? OR seed LIKE ? OR tags LIKE ?)")
+            args += [f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%"]
         if task:
             where.append("task = ?")
             args.append(task)
+        if tag:
+            where.append("tags LIKE ?")
+            args.append(f'%"{tag}"%')
+        if sort == "favorited":
+            order = "favorited DESC, created_at DESC"
+        elif sort == "oldest":
+            order = "created_at ASC"
+        elif sort == "duration":
+            order = "duration DESC, created_at DESC"
+        else:
+            order = "created_at DESC"
         clause = ("WHERE " + " AND ".join(where)) if where else ""
         rows = self.conn.execute(
-            f"SELECT * FROM generations {clause} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            f"SELECT * FROM generations {clause} ORDER BY {order} LIMIT ? OFFSET ?",
             args + [limit, offset]).fetchall()
         return [dict(r) for r in rows]
+
+    def tag_counts(self) -> list[dict]:
+        rows = self.conn.execute("SELECT tags FROM generations WHERE tags != '[]'").fetchall()
+        counts: dict[str, int] = {}
+        for row in rows:
+            try:
+                tags = json.loads(row["tags"])
+            except (ValueError, TypeError):
+                continue
+            for tag in tags:
+                counts[tag] = counts.get(tag, 0) + 1
+        return [{"tag": t, "count": c} for t, c in sorted(counts.items(), key=lambda kv: -kv[1])]
+
+    def set_tags(self, gen_id: str, tags: list[str]) -> None:
+        clean = sorted({t.strip().lstrip("#") for t in tags if t.strip()})
+        self.conn.execute("UPDATE generations SET tags = ? WHERE gen_id = ?",
+                          (json.dumps(clean), gen_id))
+        self.conn.commit()
+
+    def set_favorite(self, gen_id: str, favorited: bool) -> None:
+        self.conn.execute("UPDATE generations SET favorited = ? WHERE gen_id = ?",
+                          (1 if favorited else 0, gen_id))
+        self.conn.commit()
 
     def generations_missing_files(self) -> list[dict]:
         rows = self.conn.execute(

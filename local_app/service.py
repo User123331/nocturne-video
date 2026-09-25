@@ -64,9 +64,17 @@ class Service:
         for key in ("width", "height", "seed", "steps", "shift_video", "shift_audio",
                     "sampler_name", "scheduler", "ref_image_size", "upscale_model",
                     "frame_interpolation", "interpolation_multiplier", "chunk_ffn",
-                    "chunk_count"):
+                    "chunk_count", "checkpoint", "fps"):
             if payload.get(key) not in (None, ""):
                 spec[key] = payload[key]
+        # Structured blocks pass through for the worker to validate; the worker
+        # factory owns the exact value ranges, so the local app only checks type.
+        for key in ("upscale", "cache", "watermark"):
+            value = payload.get(key)
+            if value:
+                if not isinstance(value, dict):
+                    raise ServiceError(f"{key} must be an object")
+                spec[key] = value
         if payload.get("loras"):
             spec["loras"] = [
                 {"name": str(l.get("name", "")).strip(), "strength": float(l.get("strength", 1.0))}
@@ -90,7 +98,14 @@ class Service:
 
         job_id = f"nv-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
         result = runpod_client.run(spec)
-        self.db.insert_job(job_id, result["id"], task, quality, spec, prompt_text)
+        stored_spec = dict(spec)
+        if isinstance(stored_spec.get("watermark"), dict):
+            # The uploaded watermark bytes are large and never reused; keep the
+            # parameter block only.
+            stored_spec["watermark"] = {k: v for k, v in spec["watermark"].items()
+                                        if k != "image_b64"}
+            stored_spec["watermark"]["image"] = "<uploaded>"
+        self.db.insert_job(job_id, result["id"], task, quality, stored_spec, prompt_text)
         return {"job_id": job_id, "runpod_job_id": result["id"]}
 
     def healthcheck(self) -> dict:
@@ -230,6 +245,42 @@ class Service:
                     "bytes": sum(o["bytes"] for o in objects)}
         except Exception as exc:  # noqa: BLE001
             return {"configured": True, "error": str(exc)}
+
+    # -- library tags / reuse ---------------------------------------------------
+
+    def set_tags(self, gen_id: str, tags: list) -> dict:
+        if not isinstance(tags, list) or len(tags) > 32:
+            raise ServiceError("tags must be a list of at most 32 strings")
+        clean = [str(t).strip().lstrip("#") for t in tags]
+        if any(len(t) > 48 for t in clean):
+            raise ServiceError("tags must be at most 48 characters")
+        self.db.set_tags(gen_id, clean)
+        return {"gen_id": gen_id, "tags": sorted({t for t in clean if t})}
+
+    def set_favorite(self, gen_id: str, favorited: bool) -> dict:
+        self.db.set_favorite(gen_id, favorited)
+        return {"gen_id": gen_id, "favorited": bool(favorited)}
+
+    def reuse(self, gen_id: str) -> dict:
+        """The original submission spec for one generation, so the composer can
+        be refilled exactly: prompt sections, files used, and every parameter."""
+        gen = self.db.get_generation(gen_id)
+        if not gen:
+            raise ServiceError(f"unknown generation {gen_id}")
+        job = self.db.get_job(gen["job_id"]) if gen.get("job_id") else None
+        spec = json.loads(job["spec_json"]) if job and job.get("spec_json") else {}
+        spec.pop("first_frame_b64", None)
+        spec.pop("last_frame_b64", None)
+        spec.pop("ref_images_b64", None)
+        spec.pop("ref_audios_b64", None)
+        spec.pop("watermark", None)  # watermark bytes are never stored
+        return {
+            "gen_id": gen_id,
+            "task": gen.get("task"),
+            "prompt": spec.get("prompt") or {},
+            "spec": spec,
+            "meta": json.loads(gen.get("meta_json") or "{}"),
+        }
 
     def bootstrap(self) -> dict:
         endpoint = config.endpoint_id()

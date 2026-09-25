@@ -169,6 +169,10 @@ def _stage_uploads(spec: dict, upload_dir: Path) -> dict:
         staged_audios.append(_write_upload(b64, upload_dir, f"ref_audio_{i}", f"ref_audio_{i}.mp3"))
     if staged_audios:
         staged["ref_audios"] = staged_audios
+    watermark = spec.get("watermark") or {}
+    if isinstance(watermark, dict) and watermark.get("image_b64"):
+        staged["watermark_image"] = _write_upload(
+            watermark["image_b64"], upload_dir, "watermark", "watermark.png")
     return staged
 
 
@@ -183,6 +187,9 @@ def _apply_staged_to_spec(spec: dict, staged: dict, upload_rel: str) -> None:
         spec["ref_images"] = staged["ref_images"]
     if staged.get("ref_audios"):
         spec["ref_audios"] = staged["ref_audios"]
+    if staged.get("watermark_image"):
+        spec["watermark"] = {**(spec.get("watermark") or {}),
+                             "image": staged["watermark_image"]}
     return spec
 
 
@@ -259,9 +266,25 @@ def handler(job: dict) -> dict:
 
         checkpoint = spec.get("checkpoint", "dasiwa-hybrid-v2-int8")
         required = DEFAULT_REQUIRED + [checkpoint]
-        upscale_slug = spec.get("upscale_model")
-        if upscale_slug:
-            required.append(upscale_slug)
+        upscale = spec.get("upscale") or {}
+        if not upscale and spec.get("upscale_model"):
+            upscale = {"mode": "model", "model": spec.get("upscale_model")}
+        mode = upscale.get("mode") if isinstance(upscale, dict) else None
+        if mode == "rtx":
+            # DaSiWa's RTX node imports the NVIDIA VFX bindings lazily; refuse
+            # here (before GPU time is spent) rather than inside the graph run.
+            try:
+                import nvvfx  # noqa: F401
+            except ImportError:
+                raise JobError(
+                    "RTX upscaling needs the NVIDIA Video Effects SDK (nvvfx), "
+                    "which this worker image does not include. Use the Model, "
+                    "Simple, or H3 Latent upscale mode instead.")
+        if mode in ("model", "h3_latent"):
+            slug = upscale.get("model") or (
+                workflow_factory.H3_LATENT_UPSCALER_DEFAULT if mode == "h3_latent" else "")
+            if slug:
+                required.append(slug)
         paths_abs = asset_manager.ensure_assets(required, allow_downloads=allow_downloads)
 
         graph, meta = workflow_factory.build_graph(

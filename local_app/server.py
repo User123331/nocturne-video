@@ -7,7 +7,10 @@ Stdlib only. Binds 127.0.0.1:8788. Routes:
   POST /api/healthcheck       submit worker healthcheck (stages volume)
   GET  /api/jobs              recent jobs
   POST /api/jobs/<id>/cancel  cancel a queued/running job
-  GET  /api/generations?q=&task=&limit=&offset=   gallery + search
+  GET  /api/generations?q=&task=&tag=&sort=&limit=&offset=   gallery + search
+  POST /api/generations/<id>/tags    replace an item's tags
+  POST /api/generations/<id>/favorite  toggle the star
+  GET  /api/generations/<id>/reuse   original submission spec for refilling
   POST /api/generations/<id>/sync   re-download from S3
   POST /api/sync-missing      sync every generation missing its local file
   GET  /api/s3/status         bucket connectivity
@@ -59,12 +62,27 @@ class NocturneServer:
             rows = self.db.search_generations(
                 q=query.get("q", [""])[0],
                 task=query.get("task", [""])[0],
+                tag=query.get("tag", [""])[0],
+                sort=query.get("sort", ["newest"])[0],
                 limit=min(int(query.get("limit", ["60"])[0]), 200),
                 offset=int(query.get("offset", ["0"])[0]),
             )
             for row in rows:
                 row["meta_json"] = json.loads(row.get("meta_json") or "{}")
-            return 200, {"generations": rows, "stats": self.db.stats()}, "json"
+                row["tags"] = json.loads(row.get("tags") or "[]")
+            return 200, {"generations": rows, "stats": self.db.stats(),
+                         "tags": self.db.tag_counts()}, "json"
+        match = re.match(r"^/api/generations/([^/]+)/tags$", path)
+        if match and method == "POST":
+            payload = json.loads(body.decode("utf-8") or "{}")
+            return 200, self.svc.set_tags(match.group(1), payload.get("tags") or []), "json"
+        match = re.match(r"^/api/generations/([^/]+)/favorite$", path)
+        if match and method == "POST":
+            payload = json.loads(body.decode("utf-8") or "{}")
+            return 200, self.svc.set_favorite(match.group(1), bool(payload.get("favorited"))), "json"
+        match = re.match(r"^/api/generations/([^/]+)/reuse$", path)
+        if match and method == "GET":
+            return 200, self.svc.reuse(match.group(1)), "json"
         match = re.match(r"^/api/jobs/([^/]+)/cancel$", path)
         if match and method == "POST":
             return 200, self.svc.cancel(match.group(1)), "json"

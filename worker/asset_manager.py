@@ -30,7 +30,8 @@ MANIFEST_PATH = Path(os.getenv("ASSET_MANIFEST", APP_ROOT / "config" / "assets.m
 MARKER_DIR_NAME = ".nocturne-verified"
 
 EXPOSED_KINDS = ("diffusion_models", "text_encoders", "vae", "vae_approx",
-                 "frame_interpolation", "loras")
+                 "frame_interpolation", "loras", "upscale_models",
+                 "latent_upscale_models")
 
 
 def load_manifest(path: Path | None = None) -> list[dict]:

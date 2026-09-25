@@ -5,27 +5,44 @@ const $ = (sel, el = document) => el.querySelector(sel);
 const $$ = (sel, el = document) => [...el.querySelectorAll(sel)];
 
 const SECTION_HINTS = {
-  integrated_multimodal_description:
-    "Shot-by-shot description. [Shot 1] … [Shot 2] At 00:02.500 hard cut …",
+  integrated_multimodal_description: "Shot-by-shot description. [Shot 1] … [Shot 2] At 00:02.500 hard cut …",
   overall_soundscape: "Diegetic sound: ambience, foley, footsteps, weather.",
-  non_diegetic_music: "Score outside the scene. Leave empty for N/A.",
-  subject_definitions:
-    "Define every <Picture i> / <Video k> / <Audio j> once, e.g. <Picture 1> is a leather jacket on a chair.",
-  summary: "One-paragraph summary of the whole clip.",
-  retention_analysis:
-    "What must carry over from each reference: wardrobe, face, palette, lighting.",
+  non_diegetic_music: "Score outside the scene. A blank line becomes N/A.",
+  subject_definitions: "Define every <Picture i> / <Audio j> once.",
+  summary: "One paragraph covering the whole clip.",
+  retention_analysis: "What carries over from each reference.",
   detailed_description: "Full shot description; refer to references by their tags.",
 };
+
+/* Only these keys are Director sections; the flf2va/i2va alignment line is
+   prose, not a section, so it renders as body text. */
+const PROMPT_SECTION_KEYS = new Set([
+  "integrated_multimodal_description", "overall_soundscape", "non_diegetic_music",
+  "subject_definitions", "summary", "retention_analysis", "detailed_description",
+]);
+
+/* The two recommended settings blocks from the workflow, and what they set. */
+const QUALITY_PRESETS = {
+  turbo: { sampler_name: "euler", scheduler: "simple", steps: 8, shift_video: 7, shift_audio: 4.5 },
+  quality: { sampler_name: "res_multistep", scheduler: "simple", steps: 25, shift_video: 11, shift_audio: 4 },
+};
+
+const MP = 1024 * 1024;
 
 const state = {
   mode: "t2va",
   quality: "quality",
+  aspect: "auto",
   sections: {},
   files: { first_frame: null, last_frame: null, ref_images: [], ref_audios: [] },
+  watermark: null,
   taskFilter: "",
+  tagFilter: "",
   selected: null,
   promptSections: {},
-  elapsedTimer: null,
+  selection: new Set(),
+  library: [],      // last rendered generations, for detail prev/next
+  detailIndex: -1,
 };
 
 async function api(path, opts = {}) {
@@ -55,6 +72,117 @@ const bytesFmt = (n) => {
   return `${v.toFixed(v >= 10 || i === 0 ? 0 : 1)} ${units[i]}`;
 };
 
+/* ---------- smart fit resolution ---------- */
+
+/* DaSiWa Director: Auto aspect follows the first visual reference (4:3 with
+   none); Auto resolution sizes the short side to 768px; MP presets divide a
+   pixel budget by the aspect. Everything snaps to 32px (Div32). */
+function firstAttachedImage() {
+  return state.files.first_frame || state.files.last_frame
+    || state.files.ref_images.find(Boolean) || null;
+}
+
+function aspectRatioOf(file) {
+  if (file && file.w && file.h) return file.w / file.h;
+  return 4 / 3;
+}
+
+function snap32(n) { return Math.max(256, Math.round(n / 32) * 32); }
+
+function computeResolution() {
+  const aspect = $("#aspect-chips .chip.active")?.dataset.aspect || "auto";
+  const preset = $("#resolution-preset").value;
+  if (aspect === "custom") {
+    return { width: Number($("#width").value) || 1024, height: Number($("#height").value) || 768 };
+  }
+  const ratio = aspect === "auto" ? aspectRatioOf(firstAttachedImage())
+    : aspect.split(":").reduce((a, b) => a / b);
+  if (preset === "custom") {
+    return { width: Number($("#width").value) || 1024, height: Number($("#height").value) || 768 };
+  }
+  let width, height;
+  if (preset === "auto") {
+    // 768 px short side, long side follows the ratio.
+    if (ratio >= 1) { height = 768; width = 768 * ratio; }
+    else { width = 768; height = 768 / ratio; }
+  } else {
+    const area = Number(preset) * MP;
+    width = Math.sqrt(area * ratio);
+    height = Math.sqrt(area / ratio);
+  }
+  width = snap32(width); height = snap32(height);
+  // Mirror the worker's clamp: pin the constrained axis, derive the other
+  // from the requested ratio so the frame never distorts.
+  const ratioOut = width / height;
+  if (width > 2560) { width = 2560; height = snap32(width / ratioOut); }
+  if (height > 1440) { height = 1440; width = snap32(height * ratioOut); }
+  const capArea = 2560 * 1440;
+  if (width * height > capArea) {
+    if (ratioOut >= 1) { width = snap32(Math.sqrt(capArea * ratioOut)); height = snap32(width / ratioOut); }
+    else { height = snap32(Math.sqrt(capArea / ratioOut)); width = snap32(height * ratioOut); }
+  }
+  return { width, height };
+}
+
+function updateCanvasReadout() {
+  const { width, height } = computeResolution();
+  $("#canvas-readout").textContent = `${width}×${height}`;
+  $("#custom-canvas").classList.toggle("hidden",
+    !($("#aspect-chips .chip.active")?.dataset.aspect === "custom" || $("#resolution-preset").value === "custom"));
+  const file = firstAttachedImage();
+  $("#aspect-hint").textContent = ($("#aspect-chips .chip.active")?.dataset.aspect || "auto") === "auto"
+    ? (file ? `Auto follows ${file.name} (${file.w}×${file.h}).` : "Auto follows the first attached image; 4:3 when nothing is attached.")
+    : "Custom canvases snap to 32 px.";
+}
+
+function updateDurationReadout() {
+  const secs = Number($("#duration").value);
+  const fps = Number($("#fps").value);
+  let n = Math.max(5, Math.round(secs * fps));
+  while (n % 17 !== 5) n += 1;
+  $("#duration-readout").textContent = `${(n / fps).toFixed(1)}s · ${n}f`;
+}
+
+function updateInterpNote() {
+  const fps = Number($("#fps").value);
+  const mult = Number($("#interp-multiplier").value);
+  $("#interp-note").textContent = `RIFE ×${mult} · ${fps * mult} fps out`;
+}
+
+/* ---------- quality presets ---------- */
+
+function applyQualityPreset(name) {
+  const preset = QUALITY_PRESETS[name];
+  $("#sampler").value = preset.sampler_name;
+  $("#scheduler").value = preset.scheduler;
+  $("#steps").value = preset.steps;
+  $("#shift_video").value = preset.shift_video;
+  $("#shift_audio").value = preset.shift_audio;
+  setQuality(name);
+}
+
+function setQuality(name) {
+  state.quality = name;
+  $$("#quality-seg .seg").forEach((s) => {
+    s.classList.toggle("active", s.dataset.quality === name);
+    s.disabled = s.dataset.quality === "custom" && name !== "custom";
+  });
+  $("#sampler-note").textContent = name === "custom"
+    ? "custom"
+    : `${QUALITY_PRESETS[name].sampler_name} · ${QUALITY_PRESETS[name].steps}`;
+}
+
+function markCustomIfEdited() {
+  const p = QUALITY_PRESETS[state.quality];
+  if (!p) return; // already custom
+  const edited = $("#sampler").value !== p.sampler_name
+    || $("#scheduler").value !== p.scheduler
+    || Number($("#steps").value) !== p.steps
+    || Number($("#shift_video").value) !== p.shift_video
+    || Number($("#shift_audio").value) !== p.shift_audio;
+  if (edited) setQuality("custom");
+}
+
 /* ---------- prompt sections per mode ---------- */
 
 function renderPromptSections() {
@@ -73,19 +201,14 @@ function renderPromptSections() {
     ta.addEventListener("input", () => { state.sections[section] = ta.value; });
     const count = document.createElement("div");
     count.className = "char-count mono dim";
+    count.textContent = `${ta.value.length}`;
     ta.addEventListener("input", () => { count.textContent = `${ta.value.length}`; });
     block.append(label, ta, count);
-    if (SECTION_HINTS[section]) {
-      const hint = document.createElement("div");
-      hint.className = "prompt-hint";
-      hint.textContent = SECTION_HINTS[section];
-      block.append(hint);
-    }
     wrap.appendChild(block);
   }
 }
 
-/* ---------- drop slots ---------- */
+/* ---------- file slots ---------- */
 
 function clearFiles() {
   state.files = { first_frame: null, last_frame: null, ref_images: [], ref_audios: [] };
@@ -97,6 +220,22 @@ function readAsB64(file) {
     reader.onload = () => resolve(String(reader.result).split(",")[1]);
     reader.onerror = reject;
     reader.readAsDataURL(file);
+  });
+}
+
+/* Keep the natural size of image uploads: Auto aspect fits the canvas to it. */
+async function withImageSize(file, entry) {
+  if (!file.type.startsWith("image/")) return entry;
+  return new Promise((resolve) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      entry.w = img.naturalWidth; entry.h = img.naturalHeight;
+      URL.revokeObjectURL(url);
+      resolve(entry);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); resolve(entry); };
+    img.src = url;
   });
 }
 
@@ -142,12 +281,14 @@ async function assignFile(slot, file) {
   const kind = slot.dataset.kind;
   const index = slot.dataset.index;
   const b64 = await readAsB64(file);
+  const entry = await withImageSize(file, { name: file.name, b64 });
   if (kind === "ref_images" || kind === "ref_audios") {
-    state.files[kind][Number(index)] = { name: file.name, b64 };
+    state.files[kind][Number(index)] = entry;
   } else {
-    state.files[kind] = { name: file.name, b64 };
+    state.files[kind] = entry;
   }
   paintSlot(slot, file);
+  updateCanvasReadout();
 }
 
 function paintSlot(slot, file) {
@@ -185,6 +326,7 @@ function unassign(slot) {
   slot.querySelector(".slot-preview")?.remove();
   slot.querySelector(".slot-clear")?.remove();
   slot.querySelector(".slot-name").textContent = "";
+  updateCanvasReadout();
 }
 
 function renderDropzones() {
@@ -201,7 +343,7 @@ function renderDropzones() {
       makeSlot({ kind: "first_frame", label: "First frame", large: true }),
       makeSlot({ kind: "last_frame", label: "Last frame", large: true }));
   } else if (state.mode === "ref2va") {
-    hint.textContent = "Add 1–9 reference images (identity, wardrobe, places) and optional audio refs. Refer to them as <Picture 1>, <Audio 1> in the prompt.";
+    hint.textContent = "Add 1 to 9 reference images (identity, wardrobe, places) and optional audio refs. Refer to them as <Picture 1>, <Audio 1> in the prompt.";
     wrap.append(hint);
     for (let i = 0; i < 9; i++) wrap.append(makeSlot({ kind: "ref_images", index: i, label: `Pic ${i + 1}` }));
     for (let i = 0; i < 3; i++) wrap.append(makeSlot({ kind: "ref_audios", index: i, label: `Audio ${i + 1}` }));
@@ -211,33 +353,29 @@ function renderDropzones() {
   }
   if (state.mode === "t2va") wrap.classList.add("hidden");
   else wrap.classList.remove("hidden");
-}
-
-/* ---------- duration / canvas ---------- */
-
-function snapFrames(seconds) {
-  let n = Math.max(5, Math.round(seconds * 24));
-  while (n % 17 !== 5) n += 1;
-  return n;
-}
-
-function updateDurationReadout() {
-  const secs = Number($("#duration").value);
-  const frames = snapFrames(secs);
-  $("#duration-readout").textContent = `${(frames / 24).toFixed(1)}s · ${frames}f`;
-}
-
-function updateCanvasReadout() {
-  const value = $("#aspect").value;
-  const custom = value === "custom";
-  $("#custom-canvas").classList.toggle("hidden", !custom);
-  const [w, h] = custom
-    ? [$("#width").value || 1024, $("#height").value || 768]
-    : value.split("x");
-  $("#canvas-readout").textContent = `${w}×${h}`;
+  $("#ref2va-extra").classList.toggle("hidden", state.mode !== "ref2va");
 }
 
 /* ---------- generate ---------- */
+
+function buildUpscaleSpec() {
+  const mode = $("#upscale-mode").value;
+  if (mode === "off") return null;
+  if (mode === "model") return { mode, model: $("#upscale-model").value };
+  if (mode === "simple") {
+    return { mode, multiplier: Number($("#simple-multiplier").value), interpolation: $("#simple-interp").value };
+  }
+  if (mode === "rtx") {
+    return {
+      mode,
+      scale: Number($("#rtx-scale").value),
+      upscale_quality: $("#rtx-quality").value,
+      denoise: $("#rtx-denoise").checked,
+      deblur: $("#rtx-deblur").checked,
+    };
+  }
+  return { mode, precision: $("#h3-precision").value };
+}
 
 async function generate() {
   const prompt = {};
@@ -252,36 +390,58 @@ async function generate() {
   if (refImages.length) files.ref_images = refImages.map((f) => f.b64);
   if (refAudios.length) files.ref_audios = refAudios.map((f) => f.b64);
 
+  const { width, height } = computeResolution();
   const body = {
     task: state.mode,
-    quality: state.quality,
+    quality: state.quality === "custom" ? "quality" : state.quality,
     prompt,
     files,
     duration_seconds: Number($("#duration").value),
+    width, height,
+    fps: Number($("#fps").value),
+    checkpoint: $("#checkpoint").value,
   };
-  const aspect = $("#aspect").value;
-  if (aspect !== "custom") {
-    const [w, h] = aspect.split("x").map(Number);
-    body.width = w; body.height = h;
-  } else {
-    body.width = Number($("#width").value);
-    body.height = Number($("#height").value);
+  if (state.mode === "ref2va") body.ref_image_size = $("#ref-image-size").value;
+
+  // Sampling: preset quality keeps worker defaults; Custom sends every field.
+  if (state.quality === "custom") {
+    const fields = {
+      steps: $("#steps").value, sampler_name: $("#sampler").value,
+      scheduler: $("#scheduler").value,
+      shift_video: $("#shift_video").value, shift_audio: $("#shift_audio").value,
+    };
+    for (const [k, v] of Object.entries(fields)) {
+      if (v === "") { toast(`Custom pace needs ${k.replace("_", " ")}`); return; }
+      body[k] = Number.isNaN(Number(v)) ? v : Number(v);
+    }
   }
-  const advanced = {
-    steps: $("#steps").value, sampler_name: $("#sampler").value,
-    shift_video: $("#shift_video").value, shift_audio: $("#shift_audio").value,
-    seed: $("#seed").value,
-  };
-  for (const [k, v] of Object.entries(advanced)) {
-    if (v !== "" && !(k === "seed" && v === "random")) body[k] = k === "seed" ? Number(v) : v;
-  }
+  if ($("#seed").value && $("#seed").value !== "random") body.seed = Number($("#seed").value);
   if ($("#frame-interp").checked) {
     body.frame_interpolation = true;
-    body.interpolation_multiplier = 2;
+    body.interpolation_multiplier = Number($("#interp-multiplier").value);
   }
   if ($("#chunk-ffn").checked) {
     body.chunk_ffn = true;
-    body.chunk_count = 4;
+    body.chunk_count = Number($("#chunk-count").value) || 4;
+  }
+  if ($("#cache-toggle").checked) {
+    body.cache = {
+      reuse_threshold: Number($("#cache-reuse").value),
+      start_percent: Number($("#cache-start").value),
+      end_percent: Number($("#cache-end").value),
+      max_steps: Number($("#cache-max-steps").value),
+    };
+  }
+  const upscale = buildUpscaleSpec();
+  if (upscale) body.upscale = upscale;
+  if ($("#watermark-toggle").checked) {
+    if (!state.watermark) { toast("Drop a PNG for the watermark first"); return; }
+    body.watermark = {
+      image_b64: state.watermark.b64,
+      position: $("#watermark-position").value,
+      scale: Number($("#watermark-scale").value),
+      transparency: Number($("#watermark-opacity").value),
+    };
   }
   const loras = $$("#lora-rows .lora-row")
     .map((row) => ({
@@ -344,62 +504,346 @@ async function refreshQueue() {
 
 /* ---------- library ---------- */
 
+const TAG_HUES = [16, 42, 92, 145, 200, 262, 320];
+function tagColor(tag) {
+  let h = 0;
+  for (const ch of tag) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  const hue = TAG_HUES[h % TAG_HUES.length];
+  return `color: hsl(${hue} 45% 68%); border-color: hsl(${hue} 45% 40% / .5)`;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function renderTagRail(tags) {
+  const rail = $("#tag-rail");
+  rail.innerHTML = '<button class="tag-chip" data-tag="">All</button>';
+  for (const { tag, count } of tags.slice(0, 24)) {
+    const chip = document.createElement("button");
+    chip.className = "tag-chip" + (state.tagFilter === tag ? " active" : "");
+    chip.dataset.tag = tag;
+    chip.innerHTML = `#${escapeHtml(tag)}<b>${count}</b>`;
+    chip.addEventListener("click", () => {
+      state.tagFilter = state.tagFilter === tag ? "" : tag;
+      refreshLibrary();
+    });
+    rail.appendChild(chip);
+  }
+  rail.firstChild.classList.toggle("active", !state.tagFilter);
+}
+
 async function refreshLibrary() {
   const q = $("#library-search").value.trim();
-  const params = new URLSearchParams({ q, task: state.taskFilter, limit: "48" });
+  const params = new URLSearchParams({
+    q, task: state.taskFilter, tag: state.tagFilter,
+    sort: $("#library-sort").value, limit: "60",
+  });
   let data;
   try { data = await api(`/api/generations?${params}`); } catch { return; }
+  state.library = data.generations;
+  renderTagRail(data.tags || []);
+  $("#library-count").textContent = `${data.stats.generations} item${data.stats.generations === 1 ? "" : "s"}`;
   const strip = $("#filmstrip");
   strip.innerHTML = "";
   $("#filmstrip-empty").classList.toggle("hidden", data.generations.length > 0);
   for (const gen of data.generations) {
-    const card = document.createElement("div");
-    card.className = "card" + (state.selected === gen.gen_id ? " active" : "");
-    const promptText = gen.prompt_text || gen.gen_id;
-    const local = gen.video_path ? "" : '<span class="card-missing">not local — sync needed</span>';
-    card.innerHTML = `
-      ${gen.video_path ? `<video src="/video/${gen.gen_id}" preload="metadata" muted></video>` : '<video preload="metadata" muted></video>'}
-      <div class="card-body">
-        <div class="card-id mono">${gen.gen_id}</div>
-        <div class="card-text">${promptText.replace(/</g, "&lt;")}</div>
-        <div class="card-tags">
-          <span class="tag">${gen.task.toUpperCase()}</span>
-          ${gen.quality === "turbo" ? '<span class="tag plain">TURBO</span>' : ""}
-          ${gen.duration ? `<span class="tag plain">${gen.duration.toFixed(1)}s</span>` : ""}
-          ${local}
-        </div>
-      </div>`;
-    card.addEventListener("mouseenter", () => { const v = card.querySelector("video"); if (v?.src) v.play().catch(() => {}); });
-    card.addEventListener("mouseleave", () => { const v = card.querySelector("video"); if (v) { v.pause(); v.currentTime = 0; } });
-    card.addEventListener("click", () => loadIntoStage(gen));
-    strip.appendChild(card);
+    strip.appendChild(renderCard(gen));
   }
   $("#lib-count").textContent = data.stats.generations;
+  updateSelectionBar();
 }
 
-async function loadIntoStage(gen) {
-  state.selected = gen.gen_id;
-  $$(".card").forEach((c) => c.classList.toggle("active", c.querySelector(".card-id")?.textContent === gen.gen_id));
-  if (!gen.video_path) {
-    try { await api(`/api/generations/${gen.gen_id}/sync`, { method: "POST" }); }
-    catch (err) { toast(err.message, "err"); return; }
+function renderCard(gen) {
+  const card = document.createElement("div");
+  card.className = "card" + (state.selected === gen.gen_id ? " active" : "");
+  const promptText = gen.prompt_text || gen.gen_id;
+  const local = gen.video_path ? "" : '<span class="card-missing">not local</span>';
+  const userTags = (gen.tags || [])
+    .map((t) => `<span class="tag user" style="${tagColor(t)}">${escapeHtml(t)}</span>`).join("");
+  const date = new Date(gen.created_at.endsWith("Z") ? gen.created_at : gen.created_at + "Z")
+    .toLocaleDateString([], { day: "2-digit", month: "2-digit", year: "2-digit" });
+  card.innerHTML = `
+    ${gen.favorited ? '<button class="card-star on" title="Starred">★</button>' : '<button class="card-star" title="Star">☆</button>'}
+    <input type="checkbox" class="card-check" aria-label="Select for tagging" ${state.selection.has(gen.gen_id) ? "checked" : ""}>
+    ${gen.video_path ? `<video src="/video/${gen.gen_id}#t=0.1" preload="metadata" muted></video>` : '<video preload="metadata" muted></video>'}
+    <div class="card-body">
+      <div class="card-id mono">${gen.gen_id}</div>
+      <div class="card-text">${escapeHtml(promptText)}</div>
+      <div class="card-tags">
+        <span class="tag">${gen.task.toUpperCase()}</span>
+        ${gen.quality === "turbo" ? '<span class="tag plain">DRAFT</span>' : ""}
+        ${gen.width ? `<span class="tag plain">${gen.width}×${gen.height}</span>` : ""}
+        ${userTags}
+        ${local}
+        <span class="card-date">${date}</span>
+      </div>
+    </div>`;
+  card.querySelector(".card-check").addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (e.target.checked) state.selection.add(gen.gen_id);
+    else state.selection.delete(gen.gen_id);
+    updateSelectionBar();
+  });
+  card.querySelector(".card-star").addEventListener("click", async (e) => {
+    e.stopPropagation();
+    try {
+      const res = await api(`/api/generations/${gen.gen_id}/favorite`, {
+        method: "POST", body: { favorited: !gen.favorited },
+      });
+      gen.favorited = res.favorited;
+      refreshLibrary();
+    } catch (err) { toast(err.message, "err"); }
+  });
+  card.addEventListener("mouseenter", () => { const v = card.querySelector("video"); if (v?.src) v.play().catch(() => {}); });
+  card.addEventListener("mouseleave", () => { const v = card.querySelector("video"); if (v) { v.pause(); v.currentTime = 0; } });
+  card.addEventListener("click", (e) => {
+    if (e.target.classList.contains("card-check")) return;
+    openDetail(gen);
+  });
+  return card;
+}
+
+function updateSelectionBar() {
+  const bar = $("#selection-bar");
+  bar.classList.toggle("hidden", state.selection.size === 0);
+  $("#selection-count").textContent = `${state.selection.size} selected`;
+}
+
+async function applySelectionTags() {
+  const raw = $("#selection-tags").value.trim();
+  if (!raw) { toast("Type one or more tags first"); return; }
+  const tags = raw.split(",").map((t) => t.trim()).filter(Boolean);
+  let done = 0;
+  for (const genId of state.selection) {
+    const gen = state.library.find((g) => g.gen_id === genId);
+    const merged = [...new Set([...(gen?.tags || []), ...tags])];
+    try {
+      await api(`/api/generations/${genId}/tags`, { method: "POST", body: { tags: merged } });
+      done++;
+    } catch (err) { toast(err.message, "err"); }
   }
-  const player = $("#player");
+  state.selection.clear();
+  $("#selection-tags").value = "";
+  toast(`Tagged ${done} item${done === 1 ? "" : "s"}`, "ok");
+  refreshLibrary();
+}
+
+/* ---------- detail / inspector ---------- */
+
+function detailFields(gen) {
+  const meta = gen.meta_json && typeof gen.meta_json === "object" ? gen.meta_json : {};
+  const upscale = meta.upscale || null;
+  const upLabel = !upscale ? "Off"
+    : upscale.mode === "model" ? `Model · ${upscale.model}`
+    : upscale.mode === "simple" ? `Simple · ×${upscale.multiplier} ${upscale.interpolation || ""}`.trim()
+    : upscale.mode === "rtx" ? `RTX VSR · ×${upscale.scale}`
+    : `H3 Latent · ${upscale.target_width || "2×"}${upscale.target_width ? `×${upscale.target_height}` : ""}`;
+  const rows = [
+    ["Seed", String(meta.seed ?? gen.seed ?? "—"), true],
+    ["CFG", "1.00 · fixed"],
+    ["Steps", String(meta.steps ?? "—")],
+    ["Sampler", `${meta.sampler_name ?? "—"} / ${meta.scheduler ?? ""}`.trim()],
+    ["Size", `${gen.width}×${gen.height}`],
+    ["Frame rate", (() => {
+      const genFps = meta.generation_fps ?? 24;
+      const outFps = meta.fps ?? genFps;
+      return outFps !== genFps ? `${genFps} fps → ${outFps} out` : `${genFps} fps`;
+    })()],
+    ["Duration", `${(gen.duration ?? meta.duration_seconds ?? 0).toFixed(2)}s · ${gen.frames ?? "—"}f`],
+    ["Shifts", `${meta.shift_video ?? "—"} video / ${meta.shift_audio ?? "—"} audio`],
+    ["Checkpoint", (meta.checkpoint || "").replace("dasiwa-hybrid-v2-", "Hybrid v2 ")] ,
+    ["Pace", gen.quality === "turbo" ? "Draft · distilled" : "Final · 25 steps"],
+    ["Interpolation", meta.frame_interpolation ? `RIFE ×${meta.interpolation_multiplier}` : "Off"],
+    ["Upscale", upLabel],
+    ["Cache", meta.cache ? `on · reuse ${meta.cache.reuse_threshold}` : "Off"],
+    ["Chunking", meta.chunk_ffn ? `on · ${meta.chunk_count ?? 4} chunks` : "Off"],
+    ["LoRAs", (meta.loras || []).map((l) => `${l.name} @ ${l.strength}`).join(", ") || "None"],
+    ["Storage", gen.video_path ? "local + S3" : (gen.s3_uri ? "S3 only" : "—")],
+  ];
+  return rows;
+}
+
+function renderInspector(gen) {
+  const grid = $("#inspector-grid");
+  grid.innerHTML = "";
+  for (const [k, v, amber] of detailFields(gen)) {
+    const cell = document.createElement("div");
+    cell.className = "field-card";
+    cell.innerHTML = `<div class="k">${k}</div><div class="v ${amber ? "amber" : ""}">${escapeHtml(v)}</div>`;
+    grid.appendChild(cell);
+  }
+  const meta = gen.meta_json && typeof gen.meta_json === "object" ? gen.meta_json : {};
+  const prompts = $("#inspector-prompts");
+  prompts.innerHTML = "";
+  const finalText = meta.prompt_final || "";
+  if (finalText) {
+    for (const part of finalText.split(/\n\n+/)) {
+      const idx = part.indexOf(": ");
+      const key = idx === -1 ? "" : part.slice(0, idx);
+      const isSection = PROMPT_SECTION_KEYS.has(key);
+      const value = isSection ? part.slice(idx + 2) : part;
+      if (!value.trim()) continue;
+      const sec = document.createElement("div");
+      sec.className = "psec";
+      if (isSection) {
+        sec.innerHTML = `<span class="field-label">${escapeHtml(key.replace(/_/g, " "))}</span>`;
+      } else {
+        sec.innerHTML = '<span class="field-label">Alignment</span>';
+      }
+      const p = document.createElement("p");
+      p.textContent = value;
+      sec.appendChild(p);
+      prompts.appendChild(sec);
+    }
+  }
+  renderDetailTags(gen);
+  $("#btn-star").textContent = gen.favorited ? "★ Starred" : "☆ Star";
+}
+
+function renderDetailTags(gen) {
+  const list = $("#detail-tag-list");
+  list.innerHTML = "";
+  for (const tag of gen.tags || []) {
+    const chip = document.createElement("span");
+    chip.className = "tag-chip";
+    chip.style.cssText = tagColor(tag);
+    chip.innerHTML = `#${escapeHtml(tag)}<span class="x" title="Remove">×</span>`;
+    chip.querySelector(".x").addEventListener("click", async () => {
+      const tags = (gen.tags || []).filter((t) => t !== tag);
+      try {
+        await api(`/api/generations/${gen.gen_id}/tags`, { method: "POST", body: { tags } });
+        gen.tags = tags;
+        renderDetailTags(gen);
+        refreshLibrary();
+      } catch (err) { toast(err.message, "err"); }
+    });
+    list.appendChild(chip);
+  }
+}
+
+async function openDetail(gen) {
+  state.selected = gen.gen_id;
+  state.detailIndex = state.library.findIndex((g) => g.gen_id === gen.gen_id);
+  $("#detail").classList.remove("hidden");
+  document.body.style.overflow = "hidden";
+  await showDetail(gen);
+}
+
+async function showDetail(gen) {
+  $("#detail-title").textContent = `Generation · ${new Date(gen.created_at.endsWith("Z") ? gen.created_at : gen.created_at + "Z").toLocaleDateString()}`;
+  $("#detail-size").textContent = gen.width ? `${gen.width} × ${gen.height}` : "";
+  $("#detail-caption").textContent = gen.prompt_text || "";
+  if (!gen.video_path) {
+    try {
+      await api(`/api/generations/${gen.gen_id}/sync`, { method: "POST" });
+      gen.video_path = `/video/${gen.gen_id}`;
+      await refreshLibrary();
+    } catch (err) { toast(err.message, "err"); }
+  }
+  const player = $("#detail-player");
   player.src = `/video/${gen.gen_id}`;
-  player.classList.remove("hidden");
-  $("#stage-empty").classList.add("hidden");
-  const meta = gen.meta_json || {};
-  $("#stage-meta").classList.remove("hidden");
-  $("#stage-meta").innerHTML = `
-    <span><b>${(gen.task || "").toUpperCase()}</b></span>
-    <span>seed <b>${gen.seed ?? "—"}</b></span>
-    <span>${gen.width}×${gen.height}</span>
-    <span>${gen.frames}f · ${(gen.duration || 0).toFixed(1)}s${meta.fps && meta.fps !== 24 ? ` · ${meta.fps}fps RIFE` : ""}</span>
-    <span>${meta.steps || ""} steps · ${meta.sampler_name || ""}</span>
-    <span>shift ${meta.shift_video ?? "—"} / ${meta.shift_audio ?? "—"}</span>
-    <span class="dim">${(gen.sha256 || "").slice(0, 12)}</span>`;
-  player.play().catch(() => {});
-  window.scrollTo({ top: 0, behavior: "smooth" });
+  renderInspector(gen);
+}
+
+function closeDetail() {
+  $("#detail").classList.add("hidden");
+  document.body.style.overflow = "";
+  $("#detail-player").pause();
+}
+
+function stepDetail(delta) {
+  const idx = state.detailIndex + delta;
+  if (idx < 0 || idx >= state.library.length) return;
+  state.detailIndex = idx;
+  const gen = state.library[idx];
+  state.selected = gen.gen_id;
+  showDetail(gen);
+}
+
+async function reuseSettings() {
+  const genId = state.selected;
+  try {
+    const data = await api(`/api/generations/${genId}/reuse`);
+    const spec = data.spec || {};
+    const meta = data.meta || {};
+    setMode(data.task || "t2va");
+    state.sections = { ...state.sections, ...(data.prompt || {}) };
+    renderPromptSections();
+    // Canvas: explicit custom size, since the original aspect source is gone.
+    $$("#aspect-chips .chip").forEach((c) => c.classList.toggle("active", c.dataset.aspect === "custom"));
+    $("#resolution-preset").value = "custom";
+    $("#width").value = meta.width || 1024;
+    $("#height").value = meta.height || 768;
+    $("#duration").value = Math.min(15, Math.max(1, Math.round(meta.duration_seconds || 5)));
+    $("#fps").value = String(meta.generation_fps || 24);
+    // Sampling: restore exact values; the segment shows Custom unless they
+    // match a preset exactly.
+    const matches = Object.entries(QUALITY_PRESETS).find(([, p]) =>
+      p.sampler_name === spec.sampler_name && p.scheduler === spec.scheduler
+      && p.steps === spec.steps && p.shift_video === spec.shift_video
+      && p.shift_audio === spec.shift_audio);
+    if (matches) applyQualityPreset(matches[0]);
+    else {
+      $("#sampler").value = spec.sampler_name || "";
+      $("#scheduler").value = spec.scheduler || "";
+      $("#steps").value = spec.steps ?? "";
+      $("#shift_video").value = spec.shift_video ?? "";
+      $("#shift_audio").value = spec.shift_audio ?? "";
+      setQuality("custom");
+    }
+    $("#seed").value = meta.seed ?? "";
+    $("#frame-interp").checked = !!meta.frame_interpolation;
+    $("#interp-multiplier").value = String(meta.interpolation_multiplier || 2);
+    $("#chunk-ffn").checked = !!meta.chunk_ffn;
+    $("#cache-toggle").checked = !!meta.cache;
+    $("#upscale-mode").value = meta.upscale?.mode || "off";
+    syncUpscaleUI();
+    if (meta.upscale?.mode === "simple") {
+      $("#simple-multiplier").value = meta.upscale.multiplier || 2;
+      $("#simple-interp").value = meta.upscale.interpolation || "Lanczos";
+    }
+    closeDetail();
+    window.scrollTo({ top: 0, behavior: "smooth" });
+    toast("Settings loaded into the composer", "ok");
+  } catch (err) { toast(err.message, "err"); }
+}
+
+/* ---------- upscale / watermark UI ---------- */
+
+function syncUpscaleUI() {
+  const mode = $("#upscale-mode").value;
+  $("#upscale-params").classList.toggle("hidden", mode === "off");
+  $$("#upscale-params [data-upscale]").forEach((el) => {
+    el.classList.toggle("hidden", el.dataset.upscale !== mode);
+  });
+}
+
+function setupWatermarkSlot() {
+  const slot = $("#watermark-slot");
+  const pick = () => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/png,image/*";
+    input.onchange = async () => {
+      const file = input.files[0];
+      if (!file) return;
+      slot.classList.add("filled");
+      slot.textContent = file.name;
+      state.watermark = { name: file.name, b64: await readAsB64(file) };
+    };
+    input.click();
+  };
+  slot.addEventListener("click", pick);
+  slot.addEventListener("dragover", (e) => { e.preventDefault(); });
+  slot.addEventListener("drop", async (e) => {
+    e.preventDefault();
+    const file = e.dataTransfer.files[0];
+    if (!file) return;
+    slot.classList.add("filled");
+    slot.textContent = file.name;
+    state.watermark = { name: file.name, b64: await readAsB64(file) };
+  });
 }
 
 /* ---------- bootstrap / beacons ---------- */
@@ -449,25 +893,110 @@ function addLoraRow(name = "", strength = 1) {
 
 function init() {
   $$(".mode-pill").forEach((pill) => pill.addEventListener("click", () => setMode(pill.dataset.mode)));
-  $$(".seg").forEach((seg) => seg.addEventListener("click", () => {
-    state.quality = seg.dataset.quality;
-    $$(".seg").forEach((s) => s.classList.toggle("active", s === seg));
+  $$("#quality-seg .seg").forEach((seg) => seg.addEventListener("click", () => {
+    if (seg.disabled) return;
+    if (seg.dataset.quality === "custom") { setQuality("custom"); return; }
+    applyQualityPreset(seg.dataset.quality);
   }));
-  $$("#task-chips .chip").forEach((chip) => chip.addEventListener("click", () => {
-    state.taskFilter = chip.dataset.task;
-    $$("#task-chips .chip").forEach((c) => c.classList.toggle("active", c === chip));
-    refreshLibrary();
+  for (const id of ["sampler", "scheduler", "steps", "shift_video", "shift_audio"]) {
+    $(`#${id}`).addEventListener("input", markCustomIfEdited);
+  }
+  $$("#aspect-chips .chip").forEach((chip) => chip.addEventListener("click", () => {
+    $$("#aspect-chips .chip").forEach((c) => c.classList.toggle("active", c === chip));
+    updateCanvasReadout();
   }));
-  $("#aspect").addEventListener("change", updateCanvasReadout);
+  $("#resolution-preset").addEventListener("change", () => { updateCanvasReadout(); updateDurationReadout(); });
   $("#width").addEventListener("input", updateCanvasReadout);
   $("#height").addEventListener("input", updateCanvasReadout);
   $("#duration").addEventListener("input", updateDurationReadout);
+  $("#fps").addEventListener("change", () => { updateDurationReadout(); updateInterpNote(); });
+  $("#interp-multiplier").addEventListener("change", updateInterpNote);
+  $("#frame-interp").addEventListener("change", () => {
+    $("#interp-params").classList.toggle("hidden", !$("#frame-interp").checked);
+    updateInterpNote();
+  });
+  $("#chunk-ffn").addEventListener("change", () => {
+    $("#chunk-params").classList.toggle("hidden", !$("#chunk-ffn").checked);
+  });
+  $("#cache-toggle").addEventListener("change", () => {
+    $("#cache-params").classList.toggle("hidden", !$("#cache-toggle").checked);
+  });
+  $("#upscale-mode").addEventListener("change", syncUpscaleUI);
+  $("#watermark-toggle").addEventListener("change", () => {
+    $("#watermark-params").classList.toggle("hidden", !$("#watermark-toggle").checked);
+  });
+  setupWatermarkSlot();
   $("#btn-dice").addEventListener("click", () => {
     $("#seed").value = String(Math.floor(Math.random() * 2 ** 53));
   });
   $("#btn-add-lora").addEventListener("click", () => addLoraRow());
   $("#btn-generate").addEventListener("click", generate);
   $("#library-search").addEventListener("input", debounce(refreshLibrary, 280));
+  $("#library-sort").addEventListener("change", refreshLibrary);
+  $("#btn-apply-tags").addEventListener("click", applySelectionTags);
+  $("#btn-clear-selection").addEventListener("click", () => {
+    state.selection.clear();
+    refreshLibrary();
+  });
+  $("#btn-back").addEventListener("click", closeDetail);
+  $("#detail-prev").addEventListener("click", () => stepDetail(-1));
+  $("#detail-next").addEventListener("click", () => stepDetail(1));
+  $("#btn-star").addEventListener("click", async () => {
+    const gen = state.library[state.detailIndex];
+    if (!gen) return;
+    try {
+      const res = await api(`/api/generations/${gen.gen_id}/favorite`, {
+        method: "POST", body: { favorited: !gen.favorited },
+      });
+      gen.favorited = res.favorited;
+      $("#btn-star").textContent = gen.favorited ? "★ Starred" : "☆ Star";
+      refreshLibrary();
+    } catch (err) { toast(err.message, "err"); }
+  });
+  $("#btn-download").addEventListener("click", () => {
+    const a = document.createElement("a");
+    a.href = `/video/${state.selected}`;
+    a.download = `${state.selected}.mp4`;
+    a.click();
+  });
+  $("#btn-reuse").addEventListener("click", reuseSettings);
+  $("#btn-sync-one").addEventListener("click", async () => {
+    try {
+      await api(`/api/generations/${state.selected}/sync`, { method: "POST" });
+      toast("Synced from S3", "ok");
+      refreshLibrary();
+    } catch (err) { toast(err.message, "err"); }
+  });
+  $("#btn-fullscreen").addEventListener("click", () => {
+    const v = $("#detail-player");
+    if (v.requestFullscreen) v.requestFullscreen();
+  });
+  $("#btn-raw").addEventListener("click", async () => {
+    try {
+      const data = await api(`/api/generations/${state.selected}/reuse`);
+      $("#raw-json").textContent = JSON.stringify({ meta: data.meta, spec: data.spec }, null, 2);
+      $("#raw-modal").classList.remove("hidden");
+    } catch (err) { toast(err.message, "err"); }
+  });
+  $("#btn-close-raw").addEventListener("click", () => $("#raw-modal").classList.add("hidden"));
+  $("#raw-modal").addEventListener("click", (e) => {
+    if (e.target === e.currentTarget) $("#raw-modal").classList.add("hidden");
+  });
+  $("#detail-tag-input").addEventListener("keydown", async (e) => {
+    if (e.key !== "Enter") return;
+    const gen = state.library[state.detailIndex];
+    if (!gen) return;
+    const tag = e.target.value.trim().replace(/^#/, "");
+    if (!tag) return;
+    const tags = [...new Set([...(gen.tags || []), tag])];
+    try {
+      await api(`/api/generations/${gen.gen_id}/tags`, { method: "POST", body: { tags } });
+      gen.tags = tags;
+      e.target.value = "";
+      renderDetailTags(gen);
+      refreshLibrary();
+    } catch (err) { toast(err.message, "err"); }
+  });
   $("#btn-sync").addEventListener("click", async () => {
     toast("Syncing missing videos…");
     try {
@@ -480,13 +1009,21 @@ function init() {
   $("#btn-healthcheck").addEventListener("click", async () => {
     try {
       await api("/api/healthcheck", { method: "POST" });
-      toast("Health-check queued: the worker will verify and stage the volume.", "ok");
+      toast("Stage volume queued: the worker verifies every weight and reports gaps.", "ok");
       refreshQueue();
     } catch (err) { toast(err.message, "err"); }
   });
   document.addEventListener("keydown", (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); generate(); }
-    if (e.key === "Escape") { const p = $("#player"); p.pause(); }
+    if (e.key === "Escape") {
+      if (!$("#raw-modal").classList.contains("hidden")) { $("#raw-modal").classList.add("hidden"); return; }
+      if (!$("#detail").classList.contains("hidden")) closeDetail();
+      else $("#player").pause();
+    }
+    if (!$("#detail").classList.contains("hidden")) {
+      if (e.key === "ArrowLeft") stepDetail(-1);
+      if (e.key === "ArrowRight") stepDetail(1);
+    }
   });
   document.addEventListener("paste", async (e) => {
     const item = [...(e.clipboardData?.items || [])].find((i) => i.type.startsWith("image/"));
@@ -495,14 +1032,14 @@ function init() {
     const openSlots = $$(".drop-slot").filter((s) => !s.classList.contains("filled") && s.dataset.kind !== "ref_audios");
     if (openSlots.length) await assignFile(openSlots[0], file);
   });
-  refreshBootstrapLoop();
   setMode("t2va");
+  applyQualityPreset("quality");
   updateDurationReadout();
   updateCanvasReadout();
   refreshQueue();
   refreshLibrary();
   setInterval(refreshQueue, 5000);
-  setInterval(refreshLibrary, 20000);
+  setInterval(refreshLibrary, 30000);
 }
 
 function refreshBootstrapLoop() {

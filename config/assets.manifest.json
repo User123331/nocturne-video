@@ -104,7 +104,20 @@
       "bytes": 690592992,
       "sha256": null,
       "requires_token": false,
-      "usage_note": "H3 latent 2x upscaler from DaSiWa's Model Links note. Staged for the upscale pipeline; v1 exposes pixel-space upscale only."
+      "usage_note": "H3 latent 2x upscaler from DaSiWa's Model Links note. The 'H3 Latent' upscale mode re-samples the AV latent through it via MMH3UltimateUpscale: extreme quality, slow."
+    },
+    {
+      "slug": "2x-animesharpv4-rcan",
+      "kind": "upscale_models",
+      "model_id": "huggingface",
+      "repo": "Kim2091/2x-AnimeSharpV4",
+      "repo_path": "2x-AnimeSharpV4_RCAN.safetensors",
+      "filename": "2x-AnimeSharpV4_RCAN.safetensors",
+      "relative_dir": "",
+      "bytes": 31053198,
+      "sha256": "6470BB91D6622D6ACDFF81132C1A8615B961B919CE2B9A01CE993378500CFBE1",
+      "requires_token": false,
+      "usage_note": "The exact pixel-space 2x upscaler DaSiWa's workflow links (RCAN architecture, supported by core UpscaleModelLoader). Used by the 'Model' upscale mode."
     }
   ]
 }

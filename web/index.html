@@ -22,83 +22,232 @@
     <span class="beacon" id="beacon-s3" data-state="off"><i></i>STORAGE</span>
   </div>
   <div class="topbar-actions">
-    <button class="ghost-btn" id="btn-healthcheck" title="Stage the volume (downloads missing weights)">Health-check</button>
+    <button class="ghost-btn" id="btn-healthcheck" title="Verify the volume and stage any missing weights">Stage volume</button>
     <button class="ghost-btn" id="btn-sync" title="Download finished videos that are missing locally">Sync library</button>
   </div>
 </header>
 
 <main class="console">
-  <!-- ============ LEFT: director controls ============ -->
-  <section class="panel panel-controls" aria-label="Director controls">
-    <div class="mode-row" role="tablist" aria-label="Generation mode">
-      <button class="mode-pill active" data-mode="t2va" role="tab">T2VA</button>
-      <button class="mode-pill" data-mode="i2va" role="tab">I2VA</button>
-      <button class="mode-pill" data-mode="flf2va" role="tab">FLF2VA</button>
-      <button class="mode-pill" data-mode="ref2va" role="tab">REF2VA</button>
+  <!-- ============ LEFT: composer ============ -->
+  <section class="panel panel-controls" aria-label="Render settings">
+
+    <div class="ctl-card">
+      <div class="ctl-head"><h2>Model &amp; render</h2><span class="mono dim" id="model-note">20.9 GB</span></div>
+      <label class="field-label" for="checkpoint">Checkpoint</label>
+      <select id="checkpoint" class="select wide">
+        <option value="dasiwa-hybrid-v2-int8" selected>Hybrid v2 · Int8</option>
+        <option value="dasiwa-hybrid-v2-int4">Hybrid v2 · Int4</option>
+      </select>
+      <p class="hint">Int8 keeps the most fidelity and wants a 48 GB+ card. Int4 fits 24 to 32 GB.</p>
+      <div class="mode-row" role="tablist" aria-label="Mode">
+        <button class="mode-pill active" data-mode="t2va" role="tab">T2VA</button>
+        <button class="mode-pill" data-mode="i2va" role="tab">I2VA</button>
+        <button class="mode-pill" data-mode="flf2va" role="tab">FLF2VA</button>
+        <button class="mode-pill" data-mode="ref2va" role="tab">REF2VA</button>
+      </div>
+      <div class="segmented" role="radiogroup" aria-label="Pace" id="quality-seg">
+        <button class="seg" data-quality="turbo" title="Distilled: euler / simple, 8 steps, shift 7 and 4.5">Draft · 8 steps</button>
+        <button class="seg active" data-quality="quality" title="res_multistep / simple, 25 steps, shift 11 and 4">Final · 25 steps</button>
+        <button class="seg" data-quality="custom" disabled>Custom</button>
+      </div>
+      <div class="prompt-blocks" id="prompt-blocks"><!-- sections injected --></div>
     </div>
 
-    <div class="quality-row">
-      <span class="field-label">Pace</span>
-      <div class="segmented" role="radiogroup" aria-label="Quality">
-        <button class="seg active" data-quality="quality">Quality · 25 steps</button>
-        <button class="seg" data-quality="turbo">Turbo · 8 steps</button>
+    <div class="ctl-card">
+      <div class="ctl-head"><h2>Canvas</h2><span class="mono dim" id="canvas-readout">1024×768</span></div>
+      <div class="chip-row" id="aspect-chips" role="radiogroup" aria-label="Aspect ratio">
+        <button class="chip active" data-aspect="auto">Auto</button>
+        <button class="chip" data-aspect="1:1">1:1</button>
+        <button class="chip" data-aspect="4:3">4:3</button>
+        <button class="chip" data-aspect="3:4">3:4</button>
+        <button class="chip" data-aspect="16:9">16:9</button>
+        <button class="chip" data-aspect="9:16">9:16</button>
+        <button class="chip" data-aspect="3:2">3:2</button>
+        <button class="chip" data-aspect="custom">Custom</button>
       </div>
-    </div>
-
-    <div class="prompt-blocks" id="prompt-blocks"><!-- sections injected --></div>
-
-    <div class="canvas-block">
-      <span class="field-label">Canvas</span>
-      <div class="aspect-row">
-        <select id="aspect" class="select">
-          <option value="1024x768" selected>4:3 · 1024×768</option>
-          <option value="1344x768">16:9 · 1344×768</option>
-          <option value="768x1344">9:16 · 768×1344</option>
-          <option value="768x1024">3:4 · 768×1024</option>
-          <option value="1152x768">3:2 · 1152×768</option>
-          <option value="custom">Custom</option>
-        </select>
-        <span class="mono dim" id="canvas-readout">1024×768</span>
-      </div>
+      <label class="field-label" for="resolution-preset">Resolution</label>
+      <select id="resolution-preset" class="select wide">
+        <option value="auto" selected>Auto · 768 px short side</option>
+        <option value="0.26">Preview · 0.26 MP</option>
+        <option value="0.52">SD · 0.52 MP</option>
+        <option value="0.83">HD · 0.83 MP</option>
+        <option value="1.00">1024p · 1.00 MP</option>
+        <option value="1.05">HD+ · 1.05 MP</option>
+        <option value="1.35">2K lite · 1.35 MP</option>
+        <option value="2.10">FHD · 2.10 MP</option>
+        <option value="custom">Custom</option>
+      </select>
       <div class="custom-canvas hidden" id="custom-canvas">
-        <input type="number" id="width" class="input mono" min="256" max="2560" step="32" value="1024">
+        <input type="number" id="width" class="input mono" min="256" max="2560" step="32" value="1024" aria-label="Width">
         <span class="dim">×</span>
-        <input type="number" id="height" class="input mono" min="256" max="1440" step="32" value="768">
+        <input type="number" id="height" class="input mono" min="256" max="1440" step="32" value="768" aria-label="Height">
       </div>
-      <div class="duration-row">
-        <label class="field-label" for="duration">Duration <span class="mono" id="duration-readout">5.0s · 124f</span></label>
-        <input type="range" id="duration" min="1" max="15" step="1" value="5">
+      <p class="hint" id="aspect-hint">Auto follows the first attached image; 4:3 when nothing is attached.</p>
+      <div class="pair-row">
+        <div class="pair-col">
+          <label class="field-label" for="duration">Duration <span class="mono" id="duration-readout">5.0s · 124f</span></label>
+          <input type="range" id="duration" min="1" max="15" step="1" value="5">
+        </div>
+        <div class="pair-col">
+          <label class="field-label" for="fps">Frame rate</label>
+          <select id="fps" class="select wide">
+            <option value="8">8 fps</option>
+            <option value="12">12 fps</option>
+            <option value="16">16 fps</option>
+            <option value="24" selected>24 fps · native</option>
+            <option value="32">32 fps</option>
+            <option value="48">48 fps</option>
+          </select>
+        </div>
+      </div>
+      <div class="hidden" id="ref2va-extra">
+        <label class="field-label" for="ref-image-size">Reference image size</label>
+        <select id="ref-image-size" class="select wide">
+          <option value="match" selected>Match canvas</option>
+          <option value="max">Max</option>
+        </select>
       </div>
     </div>
 
-    <details class="advanced">
-      <summary>Advanced</summary>
-      <div class="adv-grid">
-        <label>Sampler <select id="sampler" class="select">
-          <option value="">preset</option><option value="res_multistep">res_multistep</option>
-          <option value="euler">euler</option><option value="euler_ancestral">euler_ancestral</option>
-          <option value="dpmpp_2m">dpmpp_2m</option><option value="lcm">lcm</option>
-        </select></label>
-        <label>Steps <input type="number" id="steps" class="input mono" min="1" max="60" placeholder="preset"></label>
-        <label>Shift video <input type="number" id="shift_video" class="input mono" step="0.1" min="0.01" max="100" placeholder="preset"></label>
-        <label>Shift audio <input type="number" id="shift_audio" class="input mono" step="0.1" min="0.01" max="100" placeholder="preset"></label>
-        <label class="seed-label">Seed <span class="seed-wrap">
-          <input type="text" id="seed" class="input mono" placeholder="random" inputmode="numeric">
-          <button class="icon-btn" id="btn-dice" title="Randomize seed">⚄</button>
-        </span></label>
-        <div class="adv-toggles">
-          <label class="toggle"><input type="checkbox" id="frame-interp"> Frame interpolation ×2 <span class="mono dim">RIFE → 48fps</span></label>
-          <label class="toggle"><input type="checkbox" id="chunk-ffn"> Chunk feed-forward <span class="mono dim">lower VRAM</span></label>
+    <div class="ctl-card">
+      <div class="ctl-head"><h2>Sampling</h2><span class="mono dim" id="sampler-note">res_multistep · 25</span></div>
+      <div class="grid-2">
+        <label>Sampler
+          <select id="sampler" class="select wide">
+            <option value="">Preset</option>
+            <option value="res_multistep">res_multistep</option>
+            <option value="euler">euler</option>
+            <option value="euler_ancestral">euler_ancestral</option>
+            <option value="dpmpp_2m">dpmpp_2m</option>
+            <option value="dpmpp_2m_sde">dpmpp_2m_sde</option>
+            <option value="dpmpp_3m_sde">dpmpp_3m_sde</option>
+            <option value="lcm">lcm</option>
+            <option value="ddim">ddim</option>
+            <option value="uni_pc">uni_pc</option>
+          </select>
+        </label>
+        <label>Scheduler
+          <select id="scheduler" class="select wide">
+            <option value="">Preset</option>
+            <option value="simple">simple</option>
+            <option value="normal">normal</option>
+            <option value="beta">beta</option>
+            <option value="karras">karras</option>
+            <option value="exponential">exponential</option>
+            <option value="sgm_uniform">sgm_uniform</option>
+          </select>
+        </label>
+        <label>Steps <input type="number" id="steps" class="input mono" min="1" max="60" placeholder="Preset"></label>
+        <label>Seed
+          <span class="seed-wrap">
+            <input type="text" id="seed" class="input mono" placeholder="random" inputmode="numeric">
+            <button class="icon-btn" id="btn-dice" title="New random seed">⚄</button>
+          </span>
+        </label>
+        <label>Shift video <input type="number" id="shift_video" class="input mono" step="0.1" min="0.01" max="100" placeholder="Preset"></label>
+        <label>Shift audio <input type="number" id="shift_audio" class="input mono" step="0.1" min="0.01" max="100" placeholder="Preset"></label>
+      </div>
+      <p class="hint">Recommended: non-distilled res_multistep or euler, shifts 10 to 12 and 3 to 5, 20 to 25 steps. Distilled euler or lcm, shifts 6 to 12 and 3 to 5, 4 or 8 steps.</p>
+    </div>
+
+    <div class="ctl-card">
+      <div class="ctl-head"><h2>Acceleration</h2></div>
+      <label class="toggle"><input type="checkbox" id="chunk-ffn"> Chunk feed-forward
+        <span class="mono dim">lower peak VRAM</span></label>
+      <div class="grid-2 indent" id="chunk-params">
+        <label>Chunks <input type="number" id="chunk-count" class="input mono" min="1" max="64" value="4"></label>
+      </div>
+      <label class="toggle"><input type="checkbox" id="cache-toggle"> Block cache
+        <span class="mono dim">reuses step results; can ghost details</span></label>
+      <div class="grid-2 indent hidden" id="cache-params">
+        <label>Reuse threshold <input type="number" id="cache-reuse" class="input mono" step="0.01" min="0" max="1" value="0.05"></label>
+        <label>Max steps <input type="number" id="cache-max-steps" class="input mono" min="1" max="10" value="2"></label>
+        <label>Start <input type="number" id="cache-start" class="input mono" step="0.01" min="0" max="1" value="0.15"></label>
+        <label>End <input type="number" id="cache-end" class="input mono" step="0.01" min="0" max="1" value="0.90"></label>
+      </div>
+    </div>
+
+    <div class="ctl-card">
+      <div class="ctl-head"><h2>Finishing</h2></div>
+      <label class="toggle"><input type="checkbox" id="frame-interp"> Frame interpolation
+        <span class="mono dim" id="interp-note">RIFE ×2 · 48 fps out</span></label>
+      <div class="grid-2 indent hidden" id="interp-params">
+        <label>Multiplier
+          <select id="interp-multiplier" class="select wide">
+            <option value="2" selected>×2</option>
+            <option value="3">×3</option>
+            <option value="4">×4</option>
+          </select>
+        </label>
+      </div>
+      <label class="field-label" for="upscale-mode">Upscale</label>
+      <select id="upscale-mode" class="select wide">
+        <option value="off" selected>Off</option>
+        <option value="model">Model · pixel upscaler</option>
+        <option value="simple">Simple · resize</option>
+        <option value="rtx">RTX · NVIDIA VSR</option>
+        <option value="h3_latent">H3 Latent · re-sampled 2×</option>
+      </select>
+      <div class="hidden" id="upscale-params">
+        <div class="hidden" data-upscale="model">
+          <label class="field-label" for="upscale-model">Upscale model</label>
+          <select id="upscale-model" class="select wide">
+            <option value="2x-animesharpv4-rcan" selected>2x AnimeSharpV4 RCAN</option>
+          </select>
         </div>
-        <div class="lora-block">
-          <div class="lora-head">
-            <span class="field-label" style="margin:0">LoRA stack <span class="dim">· files in volume /loras</span></span>
-            <button type="button" class="ghost-btn" id="btn-add-lora">+ Add</button>
-          </div>
-          <div id="lora-rows"></div>
+        <div class="grid-2 hidden" data-upscale="simple">
+          <label>Multiplier <input type="number" id="simple-multiplier" class="input mono" step="0.5" min="1" max="4" value="2"></label>
+          <label>Filter
+            <select id="simple-interp" class="select wide">
+              <option>Lanczos</option><option>Bicubic</option><option>Bilinear</option>
+              <option>Area</option><option>Nearest</option>
+            </select>
+          </label>
+        </div>
+        <div class="grid-2 hidden" data-upscale="rtx">
+          <label>Scale <input type="number" id="rtx-scale" class="input mono" step="0.5" min="1" max="4" value="2"></label>
+          <label>Quality
+            <select id="rtx-quality" class="select wide">
+              <option>Ultra</option><option>Super</option><option>High</option>
+              <option>Medium</option><option>Low</option>
+            </select>
+          </label>
+          <label class="toggle"><input type="checkbox" id="rtx-denoise"> Denoise pass</label>
+          <label class="toggle"><input type="checkbox" id="rtx-deblur"> Deblur pass</label>
+        </div>
+        <div class="hidden" data-upscale="h3_latent">
+          <label class="field-label" for="h3-precision">Precision</label>
+          <select id="h3-precision" class="select wide">
+            <option value="fp16" selected>fp16</option>
+            <option value="bf16">bf16</option>
+            <option value="fp32">fp32</option>
+          </select>
+          <p class="hint">Re-samples the latent at 2× the canvas. The highest quality path, and the slowest.</p>
         </div>
       </div>
-    </details>
+      <label class="toggle" style="margin-top:12px"><input type="checkbox" id="watermark-toggle"> Watermark overlay</label>
+      <div class="grid-2 indent hidden" id="watermark-params">
+        <div class="slot-drop" id="watermark-slot" tabindex="0">Drop a PNG</div>
+        <label>Position
+          <select id="watermark-position" class="select wide">
+            <option value="bottom-right" selected>Bottom right</option>
+            <option value="bottom-left">Bottom left</option>
+            <option value="top-right">Top right</option>
+            <option value="top-left">Top left</option>
+            <option value="center">Center</option>
+          </select>
+        </label>
+        <label>Scale <input type="number" id="watermark-scale" class="input mono" step="0.01" min="0.01" max="1" value="0.12"></label>
+        <label>Opacity <input type="number" id="watermark-opacity" class="input mono" step="0.05" min="0" max="1" value="0.35"></label>
+      </div>
+      <div class="lora-block">
+        <div class="lora-head">
+          <span class="field-label" style="margin:0">LoRA stack <span class="dim">· files in volume /loras</span></span>
+          <button type="button" class="ghost-btn" id="btn-add-lora">+ Add</button>
+        </div>
+        <div id="lora-rows"></div>
+      </div>
+    </div>
   </section>
 
   <!-- ============ CENTER: stage ============ -->
@@ -108,21 +257,21 @@
     <div class="stage" id="stage">
       <div class="stage-empty" id="stage-empty">
         <p class="slate">The screen is dark.</p>
-        <p class="slate-sub">Prompt a film and press generate, or pick something from the library below.</p>
+        <p class="slate-sub">Prompt a film and queue the render, or pick something from the library.</p>
       </div>
       <video id="player" class="hidden" controls playsinline preload="metadata"></video>
       <div class="stage-meta mono hidden" id="stage-meta"></div>
     </div>
 
     <button class="generate-btn" id="btn-generate" title="Cmd/Ctrl + Enter">
-      <span class="gen-label">Generate</span>
+      <span class="gen-label">Queue render</span>
       <span class="gen-hint mono">⌘↩</span>
     </button>
   </section>
 
-  <!-- ============ RIGHT: queue + storage ============ -->
-  <section class="panel panel-queue" aria-label="Queue and storage">
-    <div class="queue-head"><span class="field-label">Queue</span><span class="mono dim" id="queue-count"></span></div>
+  <!-- ============ RIGHT: render queue ============ -->
+  <section class="panel panel-queue" aria-label="Render queue">
+    <div class="queue-head"><span class="field-label">Render queue</span><span class="mono dim" id="queue-count"></span></div>
     <ul class="queue-list" id="queue-list"></ul>
 
     <div class="storage-block">
@@ -139,21 +288,75 @@
 <!-- ============ LIBRARY ============ -->
 <section class="library" aria-label="Library">
   <div class="library-head">
-    <span class="library-title">Library</span>
-    <div class="library-tools">
-      <div class="task-chips" id="task-chips">
-        <button class="chip active" data-task="">All</button>
-        <button class="chip" data-task="t2va">T2VA</button>
-        <button class="chip" data-task="i2va">I2VA</button>
-        <button class="chip" data-task="flf2va">FLF2VA</button>
-        <button class="chip" data-task="ref2va">REF2VA</button>
-      </div>
-      <input type="search" id="library-search" class="input search" placeholder="Search prompts, ids…">
+    <div class="library-title-wrap">
+      <span class="library-title">Library</span>
+      <span class="mono dim" id="library-count">0 items</span>
     </div>
+    <div class="library-tools">
+      <input type="search" id="library-search" class="input search" placeholder="Search prompts, tags, seeds…">
+      <select id="library-sort" class="select" aria-label="Sort">
+        <option value="newest" selected>Newest</option>
+        <option value="oldest">Oldest</option>
+        <option value="duration">Longest</option>
+        <option value="favorited">Starred first</option>
+      </select>
+    </div>
+  </div>
+  <div class="tag-rail" id="tag-rail"><!-- tag chips with counts injected --></div>
+  <div class="selection-bar hidden" id="selection-bar">
+    <span class="mono dim" id="selection-count">0 selected</span>
+    <input type="text" id="selection-tags" class="input" placeholder="Tag selected items, comma separated">
+    <button class="ghost-btn" id="btn-apply-tags">Apply tags</button>
+    <button class="ghost-btn" id="btn-clear-selection">Clear</button>
   </div>
   <div class="filmstrip" id="filmstrip"></div>
   <div class="filmstrip-empty mono hidden" id="filmstrip-empty">nothing developed yet</div>
 </section>
+
+<!-- ============ DETAIL / INSPECTOR ============ -->
+<div class="detail hidden" id="detail">
+  <header class="detail-head">
+    <button class="ghost-btn" id="btn-back">&lt; Library</button>
+    <span class="detail-title" id="detail-title">Generation</span>
+    <span class="mono dim" id="detail-size"></span>
+    <span class="detail-actions">
+      <button class="ghost-btn" id="btn-fullscreen">Full screen</button>
+      <button class="ghost-btn" id="btn-raw">Raw metadata</button>
+    </span>
+  </header>
+  <div class="detail-body">
+    <div class="detail-main">
+      <video id="detail-player" controls playsinline preload="metadata"></video>
+      <p class="detail-caption" id="detail-caption"></p>
+      <button class="detail-nav prev" id="detail-prev" aria-label="Previous">&lsaquo;</button>
+      <button class="detail-nav next" id="detail-next" aria-label="Next">&rsaquo;</button>
+    </div>
+    <aside class="inspector" aria-label="Inspector">
+      <div class="inspector-scroll">
+        <div class="inspector-tags">
+          <input type="text" id="detail-tag-input" class="input" placeholder="Add a tag, press Enter">
+          <div class="tag-list" id="detail-tag-list"></div>
+        </div>
+        <div class="inspector-actions">
+          <button class="ghost-btn" id="btn-star">☆ Star</button>
+          <button class="ghost-btn" id="btn-download">Download</button>
+          <button class="ghost-btn" id="btn-reuse">Reuse settings</button>
+          <button class="ghost-btn" id="btn-sync-one">Sync from S3</button>
+        </div>
+        <div class="inspector-grid" id="inspector-grid"><!-- field cards injected --></div>
+        <div class="inspector-prompts" id="inspector-prompts"></div>
+      </div>
+    </aside>
+  </div>
+</div>
+
+<!-- ============ RAW METADATA ============ -->
+<div class="modal hidden" id="raw-modal">
+  <div class="modal-card">
+    <div class="modal-head"><span class="field-label">Raw metadata</span><button class="ghost-btn" id="btn-close-raw">Close</button></div>
+    <pre class="mono" id="raw-json"></pre>
+  </div>
+</div>
 
 <div class="toast-rail" id="toast-rail" aria-live="polite"></div>
 
