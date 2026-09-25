@@ -280,6 +280,21 @@ class GraphTests(unittest.TestCase):
             with self.assertRaises(wf.SpecError, msg=str(bad)):
                 self.build({"upscale": bad})
 
+    def test_rtx_quality_levels_match_node_enum(self):
+        # DaSiWa's RTX node offers Low/Medium/High/Ultra only; "Super" does not
+        # exist and the node rejects it at validation time.
+        self.assertEqual(wf.RTX_QUALITY_LEVELS, ("Low", "Medium", "High", "Ultra"))
+        with self.assertRaises(wf.SpecError):
+            self.build({"upscale": {"mode": "rtx", "upscale_quality": "Super"}})
+        graph, _ = self.build({"upscale": {"mode": "rtx", "upscale_quality": "High",
+                                           "denoise": True, "deblur": True}})
+        node = graph["35"]["inputs"]
+        self.assertEqual(node["upscale_quality"], "High")
+        self.assertEqual(node["denoise_quality"], "Ultra")
+        self.assertTrue(node["denoise"])
+        self.assertEqual(node["resize_type"], "Scale")
+        self.assertEqual(node["resize_method"], "Center Crop (Fill)")
+
     def test_cache_rejections(self):
         with self.assertRaises(wf.SpecError):
             self.build({"cache": {"start_percent": 0.9, "end_percent": 0.1}})

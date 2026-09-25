@@ -148,7 +148,7 @@ def _n(node_id: str, class_type: str, inputs: dict[str, Any]) -> dict[str, Any]:
 
 
 # DaSiWa C-MMH3 output-pipeline defaults (Settings note + workflow widgets).
-RTX_QUALITY_LEVELS = ("Off", "Low", "Medium", "High", "Super", "Ultra")
+RTX_QUALITY_LEVELS = ("Low", "Medium", "High", "Ultra")
 SIMPLE_INTERPOLATIONS = ("Nearest", "Bilinear", "Bicubic", "Area", "Lanczos")
 H3_LATENT_UPSCALER_DEFAULT = "latent-upscaler-3d"
 
