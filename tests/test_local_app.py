@@ -126,6 +126,55 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(stats["total_bytes"], 1000)
 
 
+class ValidationTests(unittest.TestCase):
+    """User-input problems must surface as ServiceError (HTTP 400), not as a
+    500 from an unguarded float()/slicing, and must not reach RunPod."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db = database.Database(Path(self.tmp.name) / "t.sqlite3")
+        from local_app import service
+        self.service = service
+        self.svc = service.Service.__new__(service.Service)  # no poller thread
+        self.svc.db = self.db
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def submit(self, **overrides):
+        payload = {
+            "task": "t2va",
+            "prompt": {"integrated_multimodal_description": "x"},
+            "duration_seconds": 2,
+        }
+        payload.update(overrides)
+        return self.svc.submit(payload)
+
+    def test_bad_number_types_are_400(self):
+        for payload in ({"duration_seconds": "abc"}, {"duration_seconds": None},
+                        {"loras": [{"name": "a", "strength": "x"}]},
+                        {"loras": "nope"}, {"files": {"ref_images": {"a": 1}}}):
+            with self.assertRaises(self.service.ServiceError, msg=str(payload)):
+                self.submit(**payload)
+
+    def test_range_checks(self):
+        for payload in ({"duration_seconds": 99}, {"duration_seconds": 0.2},
+                        {"loras": [{"name": "a", "strength": 50}]}):
+            with self.assertRaises(self.service.ServiceError, msg=str(payload)):
+                self.submit(**payload)
+
+    def test_frame_cap_spans_duration_and_fps(self):
+        with self.assertRaises(self.service.ServiceError) as ctx:
+            self.submit(duration_seconds=15, fps=48)
+        self.assertIn("362-frame maximum", str(ctx.exception))
+
+    def test_missing_media_requirements(self):
+        with self.assertRaises(self.service.ServiceError):
+            self.submit(task="i2va")
+        with self.assertRaises(self.service.ServiceError):
+            self.submit(task="ref2va")
+
+
 class SigV4Tests(unittest.TestCase):
     def test_signer_builds_request_without_crashing(self):
         import urllib.request

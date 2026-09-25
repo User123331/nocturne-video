@@ -36,6 +36,8 @@ REQUIRED_NODES = [
     "LoraLoaderModelOnly",
     "UpscaleModelLoader",
     "ImageUpscaleWithModel",
+    # reference audio for ref2va
+    "LoadAudio",
     # core RIFE frame interpolation
     "FrameInterpolate",
     "FrameInterpolationModelLoader",
@@ -92,6 +94,7 @@ def build_all_graphs() -> dict:
         "flf2va": {"task": "flf2va", "first_frame": "gate.png", "last_frame": "gate.png",
                    "prompt": {"integrated_multimodal_description": "gate check"}},
         "ref2va": {"task": "ref2va", "ref_images": ["gate.png"],
+                   "ref_audios": ["gate.mp3"],
                    "prompt": {"subject_definitions": "s", "summary": "s",
                               "retention_analysis": "r", "detailed_description": "d",
                               "overall_soundscape": "o"}},

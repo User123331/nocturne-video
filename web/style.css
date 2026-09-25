@@ -153,6 +153,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .pair-row { display: grid; grid-template-columns: 1.35fr 1fr; gap: 12px; margin-top: 12px; }
 .pair-col input[type="range"] { width: 100%; accent-color: var(--accent); height: 20px; cursor: pointer; }
 #duration-readout { color: var(--accent); margin-left: 5px; letter-spacing: 0; }
+#duration-readout.over { color: var(--coral); }
 .pair-col .select { margin-top: 0; }
 
 /* prompt sections */

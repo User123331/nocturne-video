@@ -152,6 +152,18 @@ class Service:
         if task == "ref2va" and not spec.get("ref_images_b64"):
             raise ServiceError("ref2va needs at least one reference image")
 
+        # Duration and frame rate are each valid alone but their product can
+        # exceed the model's trained frame range. The worker enforces this too;
+        # checking here turns it into a 400 before any GPU time is spent.
+        fps = int(spec.get("fps") or 24)
+        frames = round(spec["duration_seconds"] * fps)
+        while frames % 17 != 5:
+            frames += 1
+        if frames > 362:
+            raise ServiceError(
+                f"{spec['duration_seconds']:g}s at {fps} fps needs {frames} frames, "
+                f"over the 362-frame maximum; shorten the clip or lower the frame rate")
+
         job_id = f"nv-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
         # Record the job BEFORE submitting: if the insert fails (locked DB, disk
         # full) we must not have a live GPU render that nothing tracks. The

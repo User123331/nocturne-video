@@ -144,12 +144,20 @@ function updateCanvasReadout() {
     : "Custom canvases snap to 32 px.";
 }
 
+const MAX_FRAMES = 362;
+
 function updateDurationReadout() {
   const secs = Number($("#duration").value);
   const fps = Number($("#fps").value);
   let n = Math.max(5, Math.round(secs * fps));
   while (n % 17 !== 5) n += 1;
-  $("#duration-readout").textContent = `${(n / fps).toFixed(1)}s · ${n}f`;
+  const readout = $("#duration-readout");
+  const over = n > MAX_FRAMES;
+  readout.textContent = over
+    ? `${(n / fps).toFixed(1)}s · ${n}f — over the ${MAX_FRAMES}-frame limit`
+    : `${(n / fps).toFixed(1)}s · ${n}f`;
+  readout.classList.toggle("over", over);
+  return { frames: n, over };
 }
 
 function updateInterpNote() {
@@ -398,6 +406,11 @@ async function generate() {
   const prompt = {};
   for (const section of state.promptSections[state.mode] || []) {
     prompt[section] = $(`#sec-${section}`)?.value ?? "";
+  }
+  const { over } = updateDurationReadout();
+  if (over) {
+    toast(`Duration and frame rate together exceed the ${MAX_FRAMES}-frame limit`, "err");
+    return;
   }
   const files = {};
   if (state.files.first_frame) files.first_frame = state.files.first_frame.b64;
