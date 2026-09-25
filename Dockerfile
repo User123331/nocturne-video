@@ -46,10 +46,19 @@ RUN comfy-node-install \
     comfyui-gguf
 
 # The two packs the ComfyUI registry does not carry: clone at pinned commits.
-RUN git clone --depth 1 https://github.com/darksidewalker/ComfyUI-DaSiWa-Nodes.git /comfyui/custom_nodes/ComfyUI-DaSiWa-Nodes \
-    && cd /comfyui/custom_nodes/ComfyUI-DaSiWa-Nodes && git fetch --depth 1 origin a9ea632f8 && git checkout --detach a9ea632f8
-RUN git clone --depth 1 https://github.com/bbaudio-2025/Comfyui-MMH3-UltimateUpscale.git /comfyui/custom_nodes/Comfyui-MMH3-UltimateUpscale \
-    && cd /comfyui/custom_nodes/Comfyui-MMH3-UltimateUpscale && git fetch --depth 1 origin fe6658f6d && git checkout --detach fe6658f6d
+# Pinned by FULL commit SHA. GitHub's upload-pack only resolves a complete
+# 40-char object id for a shallow fetch; the abbreviated 9-char form fails with
+# "fatal: couldn't find remote ref", which is what broke the previous build.
+RUN git init -q /comfyui/custom_nodes/ComfyUI-DaSiWa-Nodes \
+    && cd /comfyui/custom_nodes/ComfyUI-DaSiWa-Nodes \
+    && git remote add origin https://github.com/darksidewalker/ComfyUI-DaSiWa-Nodes.git \
+    && git fetch --depth 1 origin a9ea632f8d862394e7ef21cb990ac9cb4bc334bf \
+    && git checkout -q FETCH_HEAD
+RUN git init -q /comfyui/custom_nodes/Comfyui-MMH3-UltimateUpscale \
+    && cd /comfyui/custom_nodes/Comfyui-MMH3-UltimateUpscale \
+    && git remote add origin https://github.com/bbaudio-2025/Comfyui-MMH3-UltimateUpscale.git \
+    && git fetch --depth 1 origin fe6658f6d144066f14150d3526247b417683ff2b \
+    && git checkout -q FETCH_HEAD
 
 # comfy-node-install resolves requirements in its isolated build environment,
 # while the worker runs on /opt/venv — install the runtime imports there too
