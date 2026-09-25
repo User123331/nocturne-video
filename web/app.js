@@ -323,7 +323,7 @@ async function refreshQueue() {
     const li = document.createElement("li");
     li.className = "queue-item";
     const cls = { QUEUED: "run", RUNNING: "run", COMPLETED: "done", FAILED: "fail", CANCELLED: "fail" }[job.status] || "";
-    const created = new Date(job.created_at + "Z").toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    const created = new Date(job.created_at.endsWith("Z") ? job.created_at : job.created_at + "Z").toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     li.innerHTML = `
       <div class="queue-item-top">
         <span class="qdot ${cls}"></span>
