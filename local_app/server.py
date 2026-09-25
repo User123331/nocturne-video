@@ -75,13 +75,13 @@ class NocturneServer:
             gen = self.db.get_generation(match.group(1))
             if not gen or not gen.get("video_path"):
                 return 404, {"error": "video not available locally; sync first"}, "json"
-            return ("FILE", Path(gen["video_path"])), "", "file"
+            return "FILE", Path(gen["video_path"]), "file"
         if path == "/" and method == "GET":
-            return ("FILE", WEB_DIR / "index.html"), "", "file"
+            return "FILE", WEB_DIR / "index.html", "file"
         if method == "GET":
             asset = (WEB_DIR / path.lstrip("/")).resolve()
             if asset.is_file() and str(asset).startswith(str(WEB_DIR)):
-                return ("FILE", asset), "", "file"
+                return "FILE", asset, "file"
         return 404, {"error": f"no route for {method} {path}"}, "json"
 
 
