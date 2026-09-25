@@ -130,8 +130,8 @@ def assemble_prompt(task: str, prompt: dict[str, Any], duration_seconds: float) 
     raise SpecError(f"unknown task {task!r}")
 
 
-def _n(node_id: str, class_type: str, inputs: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-    return node_id, {"class_type": class_type, "inputs": inputs}
+def _n(node_id: str, class_type: str, inputs: dict[str, Any]) -> dict[str, Any]:
+    return {"class_type": class_type, "inputs": inputs}
 
 
 def build_graph(
@@ -187,7 +187,7 @@ def build_graph(
 
     workflow: dict[str, Any] = {}
 
-    workflow["1"], _ = _n("1", "UNETLoader", {
+    workflow["1"] = _n("1", "UNETLoader", {
         "unet_name": paths[checkpoint_slug], "weight_dtype": "default",
     })
 
@@ -200,16 +200,16 @@ def build_graph(
         if not -4.0 <= strength <= 4.0:
             raise SpecError("lora strength must be within -4..4")
         nid = f"10{idx}"
-        workflow[nid], _ = _n(nid, "LoraLoaderModelOnly", {
+        workflow[nid] = _n(nid, "LoraLoaderModelOnly", {
             "lora_name": name, "strength_model": strength, "model": [model_source, 0],
         })
         model_source = nid
 
-    workflow["2"], _ = _n("2", "CLIPLoader", {
+    workflow["2"] = _n("2", "CLIPLoader", {
         "clip_name": paths[te_slug], "type": "minimax", "device": "default",
     })
-    workflow["3"], _ = _n("3", "VAELoader", {"vae_name": paths["video-vae-fp16"]})
-    workflow["4"], _ = _n("4", "VAELoader", {"vae_name": paths["audio-vae-fp32"]})
+    workflow["3"] = _n("3", "VAELoader", {"vae_name": paths["video-vae-fp16"]})
+    workflow["4"] = _n("4", "VAELoader", {"vae_name": paths["audio-vae-fp32"]})
 
     if task == "ref2va":
         cond_inputs: dict[str, Any] = {
@@ -228,10 +228,10 @@ def build_graph(
         grow: dict[str, Any] = {}
         for i, ref in enumerate(ref_images, start=1):
             nid = f"20{i}"
-            workflow[nid], _ = _n(nid, "LoadImage", {"image": f"{upload_dir}/{ref}"})
+            workflow[nid] = _n(nid, "LoadImage", {"image": f"{upload_dir}/{ref}"})
             grow[f"ref_image_{i}"] = [nid, 0]
         cond_inputs["ref_images"] = grow
-        workflow["5"], _ = _n("5", "MiniMaxH3ReferenceToVideo", cond_inputs)
+        workflow["5"] = _n("5", "MiniMaxH3ReferenceToVideo", cond_inputs)
     else:
         cond_inputs = {
             "clip": ["2", 0],
@@ -245,49 +245,49 @@ def build_graph(
             first = spec.get("first_frame")
             if not first:
                 raise SpecError(f"{task} requires a first frame image")
-            workflow["21"], _ = _n("21", "LoadImage", {"image": f"{upload_dir}/{first}"})
+            workflow["21"] = _n("21", "LoadImage", {"image": f"{upload_dir}/{first}"})
             cond_inputs["first_frame"] = ["21", 0]
             if task == "flf2va":
                 last = spec.get("last_frame")
                 if not last:
                     raise SpecError("flf2va requires a last frame image")
-                workflow["22"], _ = _n("22", "LoadImage", {"image": f"{upload_dir}/{last}"})
+                workflow["22"] = _n("22", "LoadImage", {"image": f"{upload_dir}/{last}"})
                 cond_inputs["last_frame"] = ["22", 0]
-        workflow["5"], _ = _n("5", "MiniMaxH3ImageToVideo", cond_inputs)
+        workflow["5"] = _n("5", "MiniMaxH3ImageToVideo", cond_inputs)
 
-    workflow["6"], _ = _n("6", "MiniMaxH3SigmaShift", {
+    workflow["6"] = _n("6", "MiniMaxH3SigmaShift", {
         "model": [model_source, 0],
         "shift_video": shift_video,
         "shift_audio": shift_audio,
     })
-    workflow["7"], _ = _n("7", "RandomNoise", {"noise_seed": seed})
-    workflow["8"], _ = _n("8", "KSamplerSelect", {"sampler_name": sampler_name})
-    workflow["9"], _ = _n("9", "BasicScheduler", {
+    workflow["7"] = _n("7", "RandomNoise", {"noise_seed": seed})
+    workflow["8"] = _n("8", "KSamplerSelect", {"sampler_name": sampler_name})
+    workflow["9"] = _n("9", "BasicScheduler", {
         "model": ["6", 0], "scheduler": scheduler, "steps": steps, "denoise": 1.0,
     })
-    workflow["10"], _ = _n("10", "BasicGuider", {"model": ["6", 0], "positive": ["5", 0]})
-    workflow["11"], _ = _n("11", "SamplerCustomAdvanced", {
+    workflow["10"] = _n("10", "BasicGuider", {"model": ["6", 0], "positive": ["5", 0]})
+    workflow["11"] = _n("11", "SamplerCustomAdvanced", {
         "noise": ["7", 0], "guider": ["10", 0], "sampler": ["8", 0],
         "sigmas": ["9", 0], "latent": ["5", 1],
     })
-    workflow["12"], _ = _n("12", "VAEDecode", {"samples": ["11", 0], "vae": ["3", 0]})
-    workflow["13"], _ = _n("13", "VAEDecodeAudio", {"samples": ["11", 0], "vae": ["4", 0]})
+    workflow["12"] = _n("12", "VAEDecode", {"samples": ["11", 0], "vae": ["3", 0]})
+    workflow["13"] = _n("13", "VAEDecodeAudio", {"samples": ["11", 0], "vae": ["4", 0]})
 
     images_source = ["12", 0]
     upscale_slug = spec.get("upscale_model")
     if upscale_slug:
         if upscale_slug not in paths:
             raise SpecError(f"unknown upscale_model slug {upscale_slug!r}")
-        workflow["30"], _ = _n("30", "UpscaleModelLoader", {"model_name": paths[upscale_slug]})
-        workflow["31"], _ = _n("31", "ImageUpscaleWithModel", {
+        workflow["30"] = _n("30", "UpscaleModelLoader", {"model_name": paths[upscale_slug]})
+        workflow["31"] = _n("31", "ImageUpscaleWithModel", {
             "upscale_model": ["30", 0], "image": images_source,
         })
         images_source = ["31", 0]
 
-    workflow["14"], _ = _n("14", "CreateVideo", {
+    workflow["14"] = _n("14", "CreateVideo", {
         "images": images_source, "fps": FPS, "audio": ["13", 0],
     })
-    workflow["15"], _ = _n("15", "SaveVideo", {
+    workflow["15"] = _n("15", "SaveVideo", {
         "video": ["14", 0],
         "filename_prefix": f"nocturne/{gen_id}",
         "format": "mp4",

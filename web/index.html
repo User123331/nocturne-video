@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nocturne Video</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..900;1,9..144,300..900&family=IBM+Plex+Sans:wght@300;400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="grain" aria-hidden="true"></div>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-nocturne">Nocturne</span>
+    <span class="brand-video">VIDEO</span>
+  </div>
+  <div class="beacons" id="beacons">
+    <span class="beacon" id="beacon-endpoint" data-state="off"><i></i>ENDPOINT</span>
+    <span class="beacon" id="beacon-s3" data-state="off"><i></i>STORAGE</span>
+  </div>
+  <div class="topbar-actions">
+    <button class="ghost-btn" id="btn-healthcheck" title="Stage the volume (downloads missing weights)">Health-check</button>
+    <button class="ghost-btn" id="btn-sync" title="Download finished videos that are missing locally">Sync library</button>
+  </div>
+</header>
+
+<main class="console">
+  <!-- ============ LEFT: director controls ============ -->
+  <section class="panel panel-controls" aria-label="Director controls">
+    <div class="mode-row" role="tablist" aria-label="Generation mode">
+      <button class="mode-pill active" data-mode="t2va" role="tab">T2VA</button>
+      <button class="mode-pill" data-mode="i2va" role="tab">I2VA</button>
+      <button class="mode-pill" data-mode="flf2va" role="tab">FLF2VA</button>
+      <button class="mode-pill" data-mode="ref2va" role="tab">REF2VA</button>
+    </div>
+
+    <div class="quality-row">
+      <span class="field-label">Pace</span>
+      <div class="segmented" role="radiogroup" aria-label="Quality">
+        <button class="seg active" data-quality="quality">Quality · 25 steps</button>
+        <button class="seg" data-quality="turbo">Turbo · 8 steps</button>
+      </div>
+    </div>
+
+    <div class="prompt-blocks" id="prompt-blocks"><!-- sections injected --></div>
+
+    <div class="canvas-block">
+      <span class="field-label">Canvas</span>
+      <div class="aspect-row">
+        <select id="aspect" class="select">
+          <option value="1024x768" selected>4:3 · 1024×768</option>
+          <option value="1344x768">16:9 · 1344×768</option>
+          <option value="768x1344">9:16 · 768×1344</option>
+          <option value="768x1024">3:4 · 768×1024</option>
+          <option value="1152x768">3:2 · 1152×768</option>
+          <option value="custom">Custom</option>
+        </select>
+        <span class="mono dim" id="canvas-readout">1024×768</span>
+      </div>
+      <div class="custom-canvas hidden" id="custom-canvas">
+        <input type="number" id="width" class="input mono" min="256" max="2560" step="32" value="1024">
+        <span class="dim">×</span>
+        <input type="number" id="height" class="input mono" min="256" max="1440" step="32" value="768">
+      </div>
+      <div class="duration-row">
+        <label class="field-label" for="duration">Duration <span class="mono" id="duration-readout">5.0s · 124f</span></label>
+        <input type="range" id="duration" min="1" max="15" step="1" value="5">
+      </div>
+    </div>
+
+    <details class="advanced">
+      <summary>Advanced</summary>
+      <div class="adv-grid">
+        <label>Sampler <select id="sampler" class="select">
+          <option value="">preset</option><option value="res_multistep">res_multistep</option>
+          <option value="euler">euler</option><option value="euler_ancestral">euler_ancestral</option>
+          <option value="dpmpp_2m">dpmpp_2m</option><option value="lcm">lcm</option>
+        </select></label>
+        <label>Steps <input type="number" id="steps" class="input mono" min="1" max="60" placeholder="preset"></label>
+        <label>Shift video <input type="number" id="shift_video" class="input mono" step="0.1" min="0.01" max="100" placeholder="preset"></label>
+        <label>Shift audio <input type="number" id="shift_audio" class="input mono" step="0.1" min="0.01" max="100" placeholder="preset"></label>
+        <label class="seed-label">Seed <span class="seed-wrap">
+          <input type="text" id="seed" class="input mono" placeholder="random" inputmode="numeric">
+          <button class="icon-btn" id="btn-dice" title="Randomize seed">⚄</button>
+        </span></label>
+      </div>
+    </details>
+  </section>
+
+  <!-- ============ CENTER: stage ============ -->
+  <section class="stage-col" aria-label="Media stage">
+    <div class="dropzone-block" id="dropzone-block"><!-- slots injected per mode --></div>
+
+    <div class="stage" id="stage">
+      <div class="stage-empty" id="stage-empty">
+        <p class="slate">The screen is dark.</p>
+        <p class="slate-sub">Prompt a film and press generate, or pick something from the library below.</p>
+      </div>
+      <video id="player" class="hidden" controls playsinline preload="metadata"></video>
+      <div class="stage-meta mono hidden" id="stage-meta"></div>
+    </div>
+
+    <button class="generate-btn" id="btn-generate" title="Cmd/Ctrl + Enter">
+      <span class="gen-label">Generate</span>
+      <span class="gen-hint mono">⌘↩</span>
+    </button>
+  </section>
+
+  <!-- ============ RIGHT: queue + storage ============ -->
+  <section class="panel panel-queue" aria-label="Queue and storage">
+    <div class="queue-head"><span class="field-label">Queue</span><span class="mono dim" id="queue-count"></span></div>
+    <ul class="queue-list" id="queue-list"></ul>
+
+    <div class="storage-block">
+      <span class="field-label">Storage</span>
+      <div class="storage-rows mono">
+        <div class="storage-row"><span>Bucket objects</span><b id="s3-objects">—</b></div>
+        <div class="storage-row"><span>Bucket size</span><b id="s3-bytes">—</b></div>
+        <div class="storage-row"><span>Local library</span><b id="lib-count">—</b></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<!-- ============ LIBRARY ============ -->
+<section class="library" aria-label="Library">
+  <div class="library-head">
+    <span class="library-title">Library</span>
+    <div class="library-tools">
+      <div class="task-chips" id="task-chips">
+        <button class="chip active" data-task="">All</button>
+        <button class="chip" data-task="t2va">T2VA</button>
+        <button class="chip" data-task="i2va">I2VA</button>
+        <button class="chip" data-task="flf2va">FLF2VA</button>
+        <button class="chip" data-task="ref2va">REF2VA</button>
+      </div>
+      <input type="search" id="library-search" class="input search" placeholder="Search prompts, ids…">
+    </div>
+  </div>
+  <div class="filmstrip" id="filmstrip"></div>
+  <div class="filmstrip-empty mono hidden" id="filmstrip-empty">nothing developed yet</div>
+</section>
+
+<div class="toast-rail" id="toast-rail" aria-live="polite"></div>
+
+<script src="/app.js"></script>
+</body>
+</html>
