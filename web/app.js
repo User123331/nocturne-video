@@ -777,19 +777,26 @@ async function reuseSettings() {
     $("#height").value = meta.height || 768;
     $("#duration").value = Math.min(15, Math.max(1, Math.round(meta.duration_seconds || 5)));
     $("#fps").value = String(meta.generation_fps || 24);
-    // Sampling: restore exact values; the segment shows Custom unless they
-    // match a preset exactly.
+    // Sampling: the spec only carries these when the user overrode them, so
+    // fall back to the effective values the worker recorded in the meta.
+    const eff = {
+      sampler_name: spec.sampler_name ?? meta.sampler_name,
+      scheduler: spec.scheduler ?? meta.scheduler,
+      steps: spec.steps ?? meta.steps,
+      shift_video: spec.shift_video ?? meta.shift_video,
+      shift_audio: spec.shift_audio ?? meta.shift_audio,
+    };
     const matches = Object.entries(QUALITY_PRESETS).find(([, p]) =>
-      p.sampler_name === spec.sampler_name && p.scheduler === spec.scheduler
-      && p.steps === spec.steps && p.shift_video === spec.shift_video
-      && p.shift_audio === spec.shift_audio);
+      p.sampler_name === eff.sampler_name && p.scheduler === eff.scheduler
+      && p.steps === eff.steps && p.shift_video === eff.shift_video
+      && p.shift_audio === eff.shift_audio);
     if (matches) applyQualityPreset(matches[0]);
     else {
-      $("#sampler").value = spec.sampler_name || "";
-      $("#scheduler").value = spec.scheduler || "";
-      $("#steps").value = spec.steps ?? "";
-      $("#shift_video").value = spec.shift_video ?? "";
-      $("#shift_audio").value = spec.shift_audio ?? "";
+      $("#sampler").value = eff.sampler_name || "";
+      $("#scheduler").value = eff.scheduler || "";
+      $("#steps").value = eff.steps ?? "";
+      $("#shift_video").value = eff.shift_video ?? "";
+      $("#shift_audio").value = eff.shift_audio ?? "";
       setQuality("custom");
     }
     $("#seed").value = meta.seed ?? "";
