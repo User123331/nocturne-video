@@ -1,0 +1,110 @@
+{
+  "schema_version": 1,
+  "comment": "Nocturne Video worker assets. All weights live on the Runpod network volume; the image ships none of them. Bytes are exact (HF LFS / Civitai Content-Range); sha256 pinned where the source publishes one. Civitai downloads need CIVITAI_API_TOKEN; HF files are public.",
+  "assets": [
+    {
+      "slug": "dasiwa-hybrid-v2-int8",
+      "kind": "diffusion_models",
+      "model_id": "civitai",
+      "version_id": 3314675,
+      "file_id": 3203130,
+      "filename": "dasiwa_hybrid_v2_int8.safetensors",
+      "relative_dir": "MiniMaxH3",
+      "bytes": 20967669160,
+      "sha256": "4CB8E1EAA9C3E5C664822760890BCBE6078455401CFA43205BAF322E856D25F8",
+      "requires_token": true,
+      "usage_note": "DaSiWa Hybrid v2 finetune (model 2877206). Single UNET covering FL2VA + REF2VA with the 8-step turbo already merged. Primary checkpoint; int8 row-wise convrot runtime-mixed quant."
+    },
+    {
+      "slug": "dasiwa-hybrid-v2-int4",
+      "kind": "diffusion_models",
+      "model_id": "civitai",
+      "version_id": 3314675,
+      "file_id": 3203307,
+      "filename": "dasiwa_hybrid_v2_int4.safetensors",
+      "relative_dir": "MiniMaxH3",
+      "bytes": 12536864413,
+      "sha256": "780E7A2F43313B5D8D380DE89BCCF1A4815EE9ED885259A86B21681CC3A946FB",
+      "requires_token": true,
+      "usage_note": "DaSiWa Hybrid v2 int4 build for lower-VRAM GPUs (24-32GB). Same finetune, lighter quant."
+    },
+    {
+      "slug": "qwen3vl-32b-nvfp4-awq",
+      "kind": "text_encoders",
+      "model_id": "huggingface",
+      "repo": "Comfy-Org/MiniMax-H3",
+      "repo_path": "text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+      "filename": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+      "relative_dir": "",
+      "bytes": 15687142551,
+      "sha256": null,
+      "requires_token": false,
+      "usage_note": "Qwen3-VL 32B text encoder, nvfp4 AWQ. Loaded via CLIPLoader with type=minimax. NVFP4 wants a Blackwell-class GPU (RTX PRO 6000 / H100 / B200)."
+    },
+    {
+      "slug": "video-vae-fp16",
+      "kind": "vae",
+      "model_id": "huggingface",
+      "repo": "Comfy-Org/MiniMax-H3",
+      "repo_path": "vae/minimax_h3_video_vae_fp16.safetensors",
+      "filename": "minimax_h3_video_vae_fp16.safetensors",
+      "relative_dir": "MiniMaxH3",
+      "bytes": 5207808496,
+      "sha256": null,
+      "requires_token": false,
+      "usage_note": "Visual VAE used by DaSiWa's settings; decode-only for the video stream."
+    },
+    {
+      "slug": "audio-vae-fp32",
+      "kind": "vae",
+      "model_id": "huggingface",
+      "repo": "Comfy-Org/MiniMax-H3",
+      "repo_path": "vae/minimax_h3_audio_vae_fp32.safetensors",
+      "filename": "minimax_h3_audio_vae_fp32.safetensors",
+      "relative_dir": "MiniMaxH3",
+      "bytes": 605254808,
+      "sha256": null,
+      "requires_token": false,
+      "usage_note": "Audio VAE; required for REF2VA and for any job that outputs sound."
+    },
+    {
+      "slug": "taeh3-preview",
+      "kind": "vae_approx",
+      "model_id": "huggingface",
+      "repo": "Kijai/MiniMax-H3-TAE",
+      "repo_path": "vae_approx/taeh3.safetensors",
+      "filename": "taeh3.safetensors",
+      "relative_dir": "",
+      "bytes": 9791388,
+      "sha256": null,
+      "requires_token": false,
+      "usage_note": "Tiny preview VAE. Reserved for future live-preview features; not wired into v1 graphs."
+    },
+    {
+      "slug": "rife-v4.26",
+      "kind": "frame_interpolation",
+      "model_id": "huggingface",
+      "repo": "Comfy-Org/frame_interpolation",
+      "repo_path": "frame_interpolation/rife_v4.26.safetensors",
+      "filename": "rife_v4.26.safetensors",
+      "relative_dir": "",
+      "bytes": 22674688,
+      "sha256": null,
+      "requires_token": false,
+      "usage_note": "RIFE frame interpolation (DaSiWa's 2x option). Staged for the interpolation toggle; requires its core node set to be enabled."
+    },
+    {
+      "slug": "latent-upscaler-3d",
+      "kind": "latent_upscale_models",
+      "model_id": "huggingface",
+      "repo": "LBH-123-AI/Minimax_h3_latent_Upscaler",
+      "repo_path": "minimax_h3_latent_upscaler_3d_conv_v1/minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors",
+      "filename": "minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors",
+      "relative_dir": "",
+      "bytes": 690592992,
+      "sha256": null,
+      "requires_token": false,
+      "usage_note": "H3 latent 2x upscaler from DaSiWa's Model Links note. Staged for the upscale pipeline; v1 exposes pixel-space upscale only."
+    }
+  ]
+}
