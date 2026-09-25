@@ -181,9 +181,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .custom-canvas .input { width: 90px; }
 
 /* toggles */
-.toggle { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--ink); margin-top: 11px; }
-.toggle input { accent-color: var(--accent); }
-.toggle .mono { margin-left: auto; color: var(--faint); }
+.toggle { display: flex; align-items: baseline; gap: 8px; font-size: 12.5px; color: var(--ink); margin-top: 11px; }
+.toggle input { accent-color: var(--accent); flex: none; align-self: center; }
+.toggle > .tlabel { flex: none; }
+.toggle .mono { margin-left: auto; color: var(--faint); text-align: right; }
 
 .seed-wrap { display: flex; gap: 6px; }
 .seed-wrap .input { flex: 1; }

@@ -148,13 +148,13 @@
 
     <div class="ctl-card">
       <div class="ctl-head"><h2>Acceleration</h2></div>
-      <label class="toggle"><input type="checkbox" id="chunk-ffn"> Chunk feed-forward
-        <span class="mono dim">lower peak VRAM</span></label>
+      <label class="toggle"><input type="checkbox" id="chunk-ffn"> <span class="tlabel">Chunk feed-forward</span>
+        <span class="mono">lower peak VRAM</span></label>
       <div class="grid-2 indent" id="chunk-params">
         <label>Chunks <input type="number" id="chunk-count" class="input mono" min="1" max="64" value="4"></label>
       </div>
-      <label class="toggle"><input type="checkbox" id="cache-toggle"> Block cache
-        <span class="mono dim">reuses step results; can ghost details</span></label>
+      <label class="toggle"><input type="checkbox" id="cache-toggle"> <span class="tlabel">Block cache</span>
+        <span class="mono">reuses step results</span></label>
       <div class="grid-2 indent hidden" id="cache-params">
         <label>Reuse threshold <input type="number" id="cache-reuse" class="input mono" step="0.01" min="0" max="1" value="0.05"></label>
         <label>Max steps <input type="number" id="cache-max-steps" class="input mono" min="1" max="10" value="2"></label>
@@ -165,8 +165,8 @@
 
     <div class="ctl-card">
       <div class="ctl-head"><h2>Finishing</h2></div>
-      <label class="toggle"><input type="checkbox" id="frame-interp"> Frame interpolation
-        <span class="mono dim" id="interp-note">RIFE ×2 · 48 fps out</span></label>
+      <label class="toggle"><input type="checkbox" id="frame-interp"> <span class="tlabel">Frame interpolation</span>
+        <span class="mono" id="interp-note">RIFE ×2 · 48 fps out</span></label>
       <div class="grid-2 indent hidden" id="interp-params">
         <label>Multiplier
           <select id="interp-multiplier" class="select wide">

@@ -41,17 +41,26 @@ primary UNET; the turbo LoRA is already merged into it.
 | Group | Controls |
 |---|---|
 | Model | Checkpoint (Hybrid v2 Int8 / Int4), mode (T2VA, I2VA, FLF2VA, REF2VA) |
-| Pace | Draft (8 steps) / Final (25 steps) / Custom; every sampling field is editable and shows the workflow's recommended ranges |
+| Tier | Draft (euler/simple, 8 steps, shift 7/4.5), Studio (res_multistep/simple, 20 steps, shift 10/4), Final (res_multistep/simple, 25 steps, shift 11/4); editing any sampling field switches the panel to custom values |
 | Canvas | Aspect chips with Auto (follows the first attached image), resolution presets (SD 0.52 MP, HD 0.83 MP, HD+ 1.05 MP, 2K lite, FHD 2.10 MP), duration, frame rate 8 to 48 fps |
-| Sampling | Sampler, scheduler, steps, shifts, seed |
+| Sampling | Sampler, scheduler, steps, shifts, seed, with the workflow's recommended ranges printed under the fields |
 | Acceleration | Chunk feed-forward (chunk count), block cache (reuse threshold, max steps, start/end percent) |
 | Finishing | Frame interpolation (RIFE ×2/×3/×4), upscale mode, watermark (PNG, position, scale, opacity), LoRA stack |
+
+Duration and frame rate are validated together: their product must stay within
+the model's 362-frame trained range, and the composer flags an over-range
+combination before you queue it.
 
 The four upscale modes are DaSiWa's: **Model** (pixel upscaler, 2x AnimeSharpV4
 RCAN), **Simple** (torch resize with Lanczos or bicubic), **RTX** (NVIDIA VSR,
 requires the `nvidia-vfx` bindings; the worker refuses the job with a clear
 message when they are absent), and **H3 Latent** (re-samples the AV latent
 through the 3D latent upscaler; highest quality, slowest).
+
+The dashboard's right column reports the endpoint's real state: worker counts,
+queue depth, running jobs, the current job with a live elapsed clock, and the
+recent job list. The progress bar follows that state, so a cold start, a
+throttled account and an active render look different.
 
 ## Model set (staged on the volume, ~56 GB)
 
