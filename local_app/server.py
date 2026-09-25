@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import re
+import subprocess
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -178,7 +179,16 @@ def make_handler(server_state: NocturneServer):
 def main(open_browser: bool = False) -> None:
     state = NocturneServer()
     config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    httpd = ThreadingHTTPServer((config.HOST, config.PORT), make_handler(state))
+    try:
+        httpd = ThreadingHTTPServer((config.HOST, config.PORT), make_handler(state))
+    except OSError as exc:
+        if getattr(exc, "errno", None) == 48:
+            print(f"Port {config.PORT} is already in use: another Nocturne Video "
+                  f"instance is running at http://{config.HOST}:{config.PORT} "
+                  f"(stop it first, or set NOCTURNE_PORT to use a different port).",
+                  flush=True)
+            raise SystemExit(1)
+        raise
     url = f"http://{config.HOST}:{config.PORT}"
     print(f"Nocturne Video dashboard: {url} "
           f"(endpoint: {config.endpoint_id() or 'not configured'})", flush=True)
