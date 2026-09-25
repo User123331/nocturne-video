@@ -219,14 +219,21 @@ def handler(job: dict) -> dict:
 
     try:
         if job_input.get("task") == "healthcheck":
-            required = DEFAULT_REQUIRED + [job_input.get("checkpoint", "dasiwa-hybrid-v2-int8")]
+            # Verify the whole manifest so one healthcheck proves the volume is
+            # complete, instead of discovering gaps one job at a time.
+            all_slugs = [a["slug"] for a in asset_manager.load_manifest()]
             started = time.time()
-            asset_manager.ensure_assets(required, allow_downloads=allow_downloads)
+            try:
+                verified = asset_manager.ensure_assets(all_slugs, allow_downloads=allow_downloads)
+                failures = []
+            except Exception as exc:  # noqa: BLE001 — report per-asset detail
+                verified, failures = {}, [str(exc)]
             asset_manager.expose()
             return {
-                "status": "ok",
+                "status": "ok" if not failures else "error",
                 "mode": "healthcheck",
-                "assets_verified": required,
+                "assets_verified": sorted(verified.keys()),
+                "assets_failed": failures,
                 "seconds": round(time.time() - started, 1),
                 "refresh_workers": True,
             }
