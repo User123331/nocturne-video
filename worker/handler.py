@@ -335,4 +335,6 @@ def handler(job: dict) -> dict:
         shutil.rmtree(upload_dir, ignore_errors=True)
 
 
-runpod.serverless({"handler": handler})
+if __name__ == "__main__":
+    print("nocturne-video: starting Runpod handler")
+    runpod.serverless.start({"handler": handler})
