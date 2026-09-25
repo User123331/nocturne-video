@@ -83,11 +83,20 @@ def _verify(asset: dict, path: Path, deep: bool) -> None:
 
 
 def _download(asset: dict, dest: Path) -> None:
+    """Fetch one asset, tolerating Civitai's cross-host redirect to S3.
+
+    Civitai answers with a redirect to a signed S3 URL. Python's urllib drops
+    the Authorization header when a redirect crosses hosts, so S3 then rejects
+    the request with "Missing x-amz-content-sha256". The token is therefore
+    passed as a query parameter (Civitai accepts either form) and redirects are
+    followed manually so no header handling is left to the HTTP stack.
+    """
     if asset["model_id"] == "civitai":
-        url = f"https://civitai.com/api/download/models/{asset['version_id']}?fileId={asset['file_id']}"
         token = os.getenv("CIVITAI_API_TOKEN", "")
         if not token:
             raise RuntimeError(f"{asset['slug']}: CIVITAI_API_TOKEN is not set")
+        url = (f"https://civitai.com/api/download/models/{asset['version_id']}"
+               f"?fileId={asset['file_id']}&token={token}")
     elif asset["model_id"] == "huggingface":
         url = f"https://huggingface.co/{asset['repo']}/resolve/main/{asset['repo_path']}"
     else:
@@ -95,20 +104,37 @@ def _download(asset: dict, dest: Path) -> None:
 
     dest.parent.mkdir(parents=True, exist_ok=True)
     part = dest.with_suffix(dest.suffix + ".part")
-    req = urllib.request.Request(url, headers={
-        "Authorization": f"Bearer {os.getenv('CIVITAI_API_TOKEN', '')}" if asset["model_id"] == "civitai" else "",
-        "User-Agent": "nocturne-video-worker/0.1",
-    })
+
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+
+    opener = urllib.request.build_opener(_NoRedirect)
+    req = urllib.request.Request(url, headers={"User-Agent": "nocturne-video-worker/0.1"})
     total = 0
-    with urllib.request.urlopen(req, timeout=120) as resp, part.open("wb") as out:
-        while True:
-            block = resp.read(1024 * 1024 * 8)
-            if not block:
-                break
-            out.write(block)
-            total += len(block)
-            if total % (1024 * 1024 * 512) < len(block):
-                print(f"asset_manager: {asset['slug']} {total / 1e9:.1f} GB", flush=True)
+    for _ in range(6):  # follow redirects manually, carrying only safe headers
+        try:
+            resp = opener.open(req, timeout=120)
+        except urllib.error.HTTPError as exc:
+            if exc.code in (301, 302, 303, 307, 308):
+                location = exc.headers.get("Location")
+                if not location:
+                    raise
+                req = urllib.request.Request(
+                    location, headers={"User-Agent": "nocturne-video-worker/0.1"})
+                continue
+            raise
+        with resp, part.open("wb") as out:
+            while True:
+                block = resp.read(1024 * 1024 * 8)
+                if not block:
+                    break
+                out.write(block)
+                total += len(block)
+                if total % (1024 * 1024 * 512) < len(block):
+                    print(f"asset_manager: {asset['slug']} {total / 1e9:.1f} GB", flush=True)
+        break
+
     if total != asset["bytes"]:
         part.unlink(missing_ok=True)
         raise ValueError(
