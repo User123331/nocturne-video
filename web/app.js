@@ -210,6 +210,13 @@ function markCustomIfEdited() {
 
 /* ---------- prompt sections per mode ---------- */
 
+/* Auto-grow a textarea to fit its content; the left panel scrolls when the
+   stacked blocks outgrow the viewport. */
+function fitTextarea(ta) {
+  ta.style.height = "auto";
+  ta.style.height = `${ta.scrollHeight}px`;
+}
+
 function renderPromptSections() {
   const wrap = $("#prompt-blocks");
   wrap.innerHTML = "";
@@ -223,13 +230,17 @@ function renderPromptSections() {
     ta.id = `sec-${section}`;
     ta.placeholder = SECTION_HINTS[section] || "";
     ta.value = state.sections[section] || "";
-    ta.addEventListener("input", () => { state.sections[section] = ta.value; });
+    ta.addEventListener("input", () => {
+      state.sections[section] = ta.value;
+      fitTextarea(ta);
+    });
     const count = document.createElement("div");
     count.className = "char-count mono dim";
     count.textContent = `${ta.value.length}`;
     ta.addEventListener("input", () => { count.textContent = `${ta.value.length}`; });
     block.append(label, ta, count);
     wrap.appendChild(block);
+    fitTextarea(ta);  // saved text must start at the right height, not min-height
   }
 }
 
@@ -1193,6 +1204,8 @@ function init() {
   applyQualityPreset("studio");
   updateDurationReadout();
   updateCanvasReadout();
+  // Reflowed text wraps differently at a new width; re-fit the prompt boxes.
+  window.addEventListener("resize", () => $$("#prompt-blocks textarea").forEach(fitTextarea));
   refreshBootstrapLoop();
   refreshQueue();
   refreshLibrary();

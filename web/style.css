@@ -158,8 +158,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 
 /* prompt sections */
 .prompt-blocks { display: flex; flex-direction: column; gap: 13px; margin-top: 13px; }
+/* Height is JS-managed (fitTextarea): grows with content, panel scrolls. */
 .prompt-block textarea {
-  width: 100%; min-height: 82px; resize: vertical;
+  width: 100%; min-height: 82px; resize: none; overflow-y: hidden;
   background: var(--input); border: 0; box-shadow: var(--ring); border-radius: var(--radius-sm);
   color: var(--ink-soft); font: 400 12.5px/1.55 var(--sans); padding: 10px 12px;
   transition: box-shadow .15s;
