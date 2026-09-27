@@ -24,6 +24,7 @@ import json
 import mimetypes
 import re
 import subprocess
+import sys
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -211,11 +212,24 @@ def make_handler(server_state: NocturneServer):
     return Handler
 
 
+class DashboardServer(ThreadingHTTPServer):
+    """Stdlib prints a full traceback for every client that resets a socket.
+    Browsers do that routinely (preconnect probes, idle keep-alive teardown),
+    so swallow connection-level errors and keep the default dump for anything
+    that indicates a real bug."""
+
+    def handle_error(self, request, client_address):
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (ConnectionResetError, BrokenPipeError)):
+            return
+        super().handle_error(request, client_address)
+
+
 def main(open_browser: bool = False) -> None:
     state = NocturneServer()
     config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     try:
-        httpd = ThreadingHTTPServer((config.HOST, config.PORT), make_handler(state))
+        httpd = DashboardServer((config.HOST, config.PORT), make_handler(state))
     except OSError as exc:
         if getattr(exc, "errno", None) == 48:
             print(f"Port {config.PORT} is already in use: another Nocturne Video "
